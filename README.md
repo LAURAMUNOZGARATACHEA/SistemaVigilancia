@@ -1,2 +1,2 @@
 # SistemaVigilancia
-Dynamic interactive dashboard-like application created with Shiny
+Dynamic interactive dashboard application developed with Shiny
