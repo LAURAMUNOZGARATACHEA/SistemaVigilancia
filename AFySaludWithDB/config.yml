@@ -1,0 +1,17 @@
+default:
+  dataconnection:
+    driver: 'MySQL ODBC 8.4 Unicode Driver'
+    server: 'localhost'
+    uid: 'root'
+    pwd: ''
+    port: 3306
+    database: 'laura_db'
+
+shinyapps:
+  dataconnection:
+    driver: 'MySQL'
+    server: 'localhost'
+    uid: 'root'
+    pwd: ''
+    port: 3306
+    database: 'laura_db'

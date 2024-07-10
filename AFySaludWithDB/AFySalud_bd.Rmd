@@ -1,0 +1,3306 @@
+---
+title: "Proyecto AF y Salud"
+autor: TFM Laura Muñoz
+output:
+  flexdashboard::flex_dashboard:
+    orientation: columns
+    vertical_layout: scroll
+    self_contained: true
+    css: styles.css
+    theme:
+      version: 5
+      bootswatch: slate
+    source_code: embed
+runtime: shiny
+resource_files:
+- config.yml
+---
+
+
+
+```{r setup, include = FALSE}
+library(flexdashboard)
+library(readr)
+library(ggplot2)
+library(plotly)
+library(treemap)
+library(treemapify)
+library(scico)
+library(shiny)
+library(shinyjs)
+library(shinydashboard)
+library(tidyverse)
+library(knitr)
+library(shinythemes)
+library(viridis)
+library(DT)
+library(ggmosaic)
+library(GGally)
+library(kableExtra)
+library(ggthemes)
+library(RColorBrewer)
+library(rgdax)
+library(magrittr)
+library(sf)
+library(dplyr)
+library(rlang)
+library(sjmisc)
+library(sjPlot)
+library(summarytools)
+library(kableExtra)
+library(corrplot)
+library(sjlabelled)
+library(epiR)
+library(DBI)
+library(RMySQL)
+library(odbc)
+```
+
+```{r include = FALSE}
+add_column_if_not_exists <- function(column_name, column_type) {
+  tryCatch({
+    conn <- dbConnect(MySQL(), user = "root", password = "", dbname = "laura_db", host = "localhost")
+
+query_check <- sprintf("
+      SELECT COUNT(*) AS column_exists
+      FROM INFORMATION_SCHEMA.COLUMNS
+      WHERE TABLE_SCHEMA = 'laura_db'  
+      AND TABLE_NAME = 'responses'
+      AND COLUMN_NAME = '%s'
+    ", column_name)
+result <- dbGetQuery(conn, query_check)
+    if (result$column_exists == 0) {
+      query_add_column <- sprintf("ALTER TABLE responses ADD COLUMN %s %s", column_name, column_type)
+      dbExecute(conn, query_add_column)
+      cat(sprintf("Column '%s' added to 'responses' table.\n", column_name))
+    } else {
+      cat(sprintf("Column '%s' already exists in 'responses' table.\n", column_name))
+    }
+
+    dbDisconnect(conn)
+
+  }, error = function(err) {
+    cat(sprintf("Error connecting to MySQL or executing query: %s\n", err$message))
+  })
+}
+
+add_column_if_not_exists("response_text", "VARCHAR(255)")
+
+```
+
+
+```{r include=FALSE}
+options(mysql = list(
+  "host" = "127.0.0.1",
+  "port" = 3306,
+  "user" = "root",
+  "password" = ""
+))
+databaseName <- "laura_db"
+  db <- dbConnect(MySQL(), dbname = databaseName, host = options()$mysql$host, 
+      port = options()$mysql$port, user = options()$mysql$user, 
+      password = options()$mysql$password)
+  query <- "
+SELECT respondent_id, MAX(YEAR(submitted_at)) AS year
+FROM responses
+GROUP BY respondent_id
+"
+resultado <- dbGetQuery(db, query)
+
+```
+
+```{sql connection=db}
+
+UPDATE responses r
+LEFT JOIN responseoptions_metadata rom 
+ON r.question_code = rom.question_code 
+AND r.response = rom.option_code_response
+SET r.response_text = CASE 
+    WHEN rom.option_value_response IS NOT NULL THEN rom.option_value_response
+    ELSE CAST(r.response AS VARCHAR(255))
+END;
+```
+
+
+```{r include=FALSE}
+dbDisconnect(db)
+
+fetch_responses_by_question <- function() {
+  tryCatch({
+    conn <- dbConnect(MySQL(), user = "root", password = "", dbname = "laura_db", host = "localhost")
+    query <- "
+      SELECT r.respondent_id, qm.question_code, r.response_text
+      FROM questions_metadata qm
+      LEFT JOIN responses r ON qm.question_code = r.question_code
+    "
+    responses <- dbGetQuery(conn, query)
+    dbDisconnect(conn)
+    responses_pivot <- responses %>%
+      pivot_wider(names_from = question_code, values_from = response_text)
+    return(responses_pivot)
+ }, error = function(err) {
+    cat(sprintf("Error connecting to MySQL or executing query: %s\n", err$message))
+    return(NULL)
+  })
+}
+
+responses_by_question <- fetch_responses_by_question()
+depurar_dataframe <- function(df) {
+  df_filtrado <- df %>%
+    filter_at(vars(-SD1), any_vars(!is.na(.)))
+  return(df_filtrado)
+}
+
+responses_by_question_depurado <- depurar_dataframe(responses_by_question)
+responses_by_question_depurado <- responses_by_question_depurado %>%
+  dplyr::rename(
+    respondent_id = respondent_id, 
+    EdadSD = SD1, 
+    SituacionLaboralSD = SD2,
+    FormacionSD = SD3,
+    CodigoPostalSD = SD4,
+    ParejaSD = SD5,
+    MenoresSD = SD6,
+    MayoresSD = SD7
+  )
+responses_by_question_depurado <- responses_by_question_depurado %>%
+  mutate(
+    PersonalSD = case_when(
+      ParejaSD == "Sí" & MenoresSD == "Sí" ~ "En pareja con menores",
+      ParejaSD == "Sí" & MenoresSD == "No" ~ "En pareja sin menores",
+      ParejaSD == "No" & MenoresSD == "Sí" ~ "Sin pareja con menores",
+      ParejaSD == "No" & MenoresSD == "No" ~ "Sin pareja ni menores",
+      TRUE ~ NA_character_  
+    )
+  )
+responses_by_question_depurado <- responses_by_question_depurado %>%
+  mutate(
+    PracticaAF = case_when(
+      AFR1 > 0 & AFR1 < 1400 ~ "Sí",
+      AFR1 >= 1400 ~ "Sí, vinculado a mi trabajo o estudios",
+      TRUE ~ "No"
+    )
+  )
+
+responses_by_question_depurado <- responses_by_question_depurado %>%
+  mutate(
+    TipoAF = case_when(
+      AFR4 %in% c("Gimnasia, actividad físico deportiva suave", "Actividad física con acompañamiento musical") ~ "AFL",
+      AFR4 == "Ejercicios de fuerza, musculación, halterofilia.." ~ "AFM",
+      AFR4 == "Gimnasia, actividad físico deportima intensa" ~ "AFV",
+      TRUE ~ NA_character_  
+    )
+  )
+
+responses_by_question_depurado <- responses_by_question_depurado %>%
+  dplyr::rename(
+    TiempoAF = AFR1, 
+    FrecuenciaAF= AFR2,
+    DeportesAF = AFR5,
+    InstalacionesAF = AFR6,
+    EnEquipoAF = AFR7,
+    CompeticionAF = AFR8,
+    LibreAF = AFR9,
+    EdadComienzoAF = AFR10,
+    MotivacionAF = AFR11,
+    CaminarAF = AFR12
+  )
+responses_by_question_depurado <- responses_by_question_depurado %>%
+  dplyr::rename(
+    TabacoHSA = HSA1, 
+    AlcoholHSA = HSA2,
+    VegetarianaHSA = HSA3,
+    SaludableHSA = HSA4,
+    MotivacionAlimentacionHSA = HSA5,
+    TiempoCocinarHSA = HSA6,
+    TiempoSedentarioHSA = HSA7,
+    EstresHSA = HSA8
+  )
+responses_by_question_depurado <- responses_by_question_depurado %>%
+  dplyr::rename(
+    ConciliacionLimitaFL = FL3, 
+    TiempoOcioFL = FL5,
+    MasPracticaFL = FL1)
+responses_by_question_depurado <- responses_by_question_depurado %>%
+   dplyr::rename(
+    EstaturaAFGC = AFGC1, 
+    PesoAFGC = AFGC2,
+    PrimeraMenstruacionAFGC = AFGC3,
+    PrimerEmbarazoAFGC = AFGC4,
+    NumEmbarazosAFGC = AFGC5,
+    EdadMenopausiaAFGC = AFGC6,
+    AntecedentesAFGC = AFGC7,
+    CancerMamaAFGC = AFGC8,
+    TipoCancerAFGC = AFGC9,
+    TratamientoAFGC = AFGC10,
+    PrescripcionAFGC = AFGC11,
+    AFTratamientoAFGC = AFGC12,
+    AFPostAFGC = AFGC13)
+responses<-responses_by_question_depurado
+responses$PracticaAF_cat<-ifelse(responses$PracticaAF == "No", "No", "Sí")
+responses$TabacoHSA_cat <- ifelse(responses$TabacoHSA %in% c("Lo he dejado", "No fumo"), "No fumo", as.character(responses$TabacoHSA))
+responses<- responses %>%
+  mutate(VidaFertilAFGC = ifelse(is.na(PrimeraMenstruacionAFGC) | is.na(EdadMenopausiaAFGC),NA, ifelse(PrimeraMenstruacionAFGC <= 11 & EdadMenopausiaAFGC == "Después de los 50 años",
+                                        "Larga", "Normal")))
+responses <- responses %>%
+  mutate(ProteccionGinecologica = ifelse(PrimerEmbarazoAFGC <= 27 & VidaFertilAFGC == "Normal" & NumEmbarazosAFGC >= 1,
+                                   "Con Protección Ginecológica",
+                                   "Sin Protección Ginecológica"))
+
+responses <- responses %>%
+  left_join(resultado, by = "respondent_id") %>%
+     dplyr::rename(AnyoEncuesta = year)
+
+responses <- responses %>%
+   mutate(EstiloDeVida = case_when(
+    !is.na(TabacoHSA) & !is.na(AlcoholHSA) & !is.na(SaludableHSA) & !is.na(PracticaAF_cat) & !is.na(TiempoAF) & 
+    TabacoHSA == "No fumo" & 
+    (AlcoholHSA == "Esporádicamente" | AlcoholHSA == "Mensualmente") & 
+    SaludableHSA >= 3 & 
+    PracticaAF_cat == "Sí" & 
+    TiempoAF >= 150 ~ "Muy Saludable",
+    
+    !is.na(TabacoHSA) & !is.na(AlcoholHSA) & !is.na(SaludableHSA) & !is.na(CaminarAF) & 
+    TabacoHSA == "No fumo" & 
+    (AlcoholHSA == "Esporádicamente" | AlcoholHSA == "Mensualmente") & 
+    SaludableHSA >= 3 & 
+    CaminarAF == ">5h" ~ "Saludable",
+    !is.na(TabacoHSA) & !is.na(AlcoholHSA) & !is.na(SaludableHSA) & 
+    !is.na(PracticaAF_cat) & !is.na(TiempoAF) & !is.na(CaminarAF) ~ "Poco Saludable",
+    TRUE ~ NA_character_ 
+  ))
+
+responses_factors<-lapply(responses,function(x){if(is.character(x)){factor(x)}else{x}})
+
+responses_factors<-as.data.frame(responses_factors)
+
+#data_subset partition
+
+
+AF_dataset<-subset(responses_factors, select =c("EdadSD","SituacionLaboralSD","PersonalSD","FormacionSD","PracticaAF", "PracticaAF_cat","FrecuenciaAF","TiempoAF","TipoAF","DeportesAF","InstalacionesAF", "EnEquipoAF", "CompeticionAF","LibreAF","EdadComienzoAF","MotivacionAF","CaminarAF","AnyoEncuesta","ConciliacionLimitaFL"))
+
+SD_dataset<-subset(responses_factors, select = c("EdadSD","FormacionSD","SituacionLaboralSD","ParejaSD","MenoresSD","MayoresSD","CodigoPostalSD","AnyoEncuesta"))
+
+HSA_dataset<-subset(responses_factors, select=c("EdadSD", "FormacionSD", "SituacionLaboralSD", "TabacoHSA","AlcoholHSA","PracticaAF_cat","TabacoHSA_cat", "VegetarianaHSA","SaludableHSA","MotivacionAlimentacionHSA","TiempoCocinarHSA","TiempoSedentarioHSA","EstresHSA","AnyoEncuesta"))
+
+AFGC_dataset<-subset(responses_factors, select=c("EstaturaAFGC","PesoAFGC","PrimeraMenstruacionAFGC","PrimerEmbarazoAFGC","NumEmbarazosAFGC","EdadMenopausiaAFGC","VidaFertilAFGC","ProteccionGinecologica", "AnyoEncuesta","EdadSD","FormacionSD","SituacionLaboralSD","TipoAF","TiempoAF","PracticaAF_cat"))
+
+
+
+AFBC_dataset<-subset(responses_factors,select=c("AntecedentesAFGC","CancerMamaAFGC","TipoCancerAFGC","TratamientoAFGC","PrescripcionAFGC","AFTratamientoAFGC","AFPostAFGC","EdadSD","FormacionSD","SituacionLaboralSD","PracticaAF_cat","EstiloDeVida","AnyoEncuesta"))
+
+AFGBC_dataset <-subset(responses_factors,select=c("AntecedentesAFGC","CancerMamaAFGC","TipoCancerAFGC","TratamientoAFGC","PrescripcionAFGC","AFTratamientoAFGC","AFPostAFGC","EdadSD","FormacionSD","SituacionLaboralSD","PracticaAF_cat","EstiloDeVida","AnyoEncuesta", "EstaturaAFGC","PesoAFGC","PrimeraMenstruacionAFGC","PrimerEmbarazoAFGC","NumEmbarazosAFGC","EdadMenopausiaAFGC","VidaFertilAFGC","ProteccionGinecologica"))
+
+
+#### Colors
+
+paleta_viridis_laura <- c ("#440154", "#21908C", "#0077AD", "#FDE725", "#FF00FF","#E6E6FA","#7AD51F", "#C07454" )
+
+bslib::bs_theme()
+
+
+```
+
+
+
+
+
+```{js}
+function toggleSidebar() {
+  $('#showSidebar').click(function(){
+    $('.section.sidebar').show();
+    $('#dashboard-container').addClass('sidebar-visible').removeClass('sidebar-not-visible');
+  });
+  $('#hideSidebar').click(function(){
+    $('.section.sidebar').hide();
+    $('#dashboard-container').addClass('sidebar-not-visible').removeClass('sidebar-visible');
+  });
+}
+
+```
+
+
+```{r}
+filtered_data <-function(dataset){
+    data <- dataset
+    if (input$edad_selector != "Todas edades") {
+      data <- data[data$EdadSD == input$edad_selector, ]
+    }
+
+    if (input$formacion_selector != "Todos niveles") {
+      data <- data[data$FormacionSD == input$formacion_selector, ]
+    }
+    if (input$laboral_selector != "Todas situaciones") {
+      data <- data[data$SituacionLaboralSD == input$laboral_selector, ]
+    }
+    if (input$anyo_selector != "Todos años") {
+      data <- data[data$AnyoEncuesta == input$anyo_selector, ]
+    }
+    if (input$personal_selector != "Todas situaciones"){
+      datos <- data[data$PersonalSD == input$personal_selector, ]
+    }
+    data 
+  }
+
+```
+
+```{r}
+filtered_year <-function(dataset){
+    data <- dataset
+    if (input$anyo_selector != "Todos años") {
+      data <- data[data$AnyoEncuesta == input$anyo_selector, ]
+    }
+    data 
+  }
+```
+
+```{r}
+
+get_frequencies <- function(dataset, variable) {
+  if (nrow(dataset()) == 0 || is.null(dataset()[[variable]])) {
+    return(data.frame(Modalidad = character(), Porcentaje = numeric()))
+  }
+  data <- dataset() %>% filter(!is.na(.data[[variable]]))
+  
+  freq_table <- table(data[[variable]])
+  prop_table <- prop.table(freq_table) * 100
+  
+  result <- data.frame(
+    Modalidad = names(freq_table),
+    Porcentaje = as.numeric(prop_table),
+    stringsAsFactors = FALSE
+  )
+  
+  result$Porcentaje <- as.numeric(sprintf("%.2f", result$Porcentaje))
+  
+  return(result)
+}
+
+```
+
+
+```{r}
+get_conditional_frequencies <- function(dataset, variable1, variable2) {
+  if (is.reactive(dataset)) {
+    dataset <- dataset()
+  }
+  
+  dataset <- dataset %>%
+    filter(!is.na(.data[[variable1]]) & !is.na(.data[[variable2]]))
+  
+  if (nrow(dataset) == 0) {
+    return(data.frame(
+      !!variable1 := character(), 
+      !!variable2 := character(), 
+      count = integer(), 
+      Porcentaje = numeric(),
+      stringsAsFactors = FALSE
+    ))
+  }
+  
+  freq_table <- table(dataset[[variable1]], dataset[[variable2]])
+  prop_table <- prop.table(freq_table, margin = 2) * 100
+  
+  freq_df <- as.data.frame(freq_table)
+  prop_df <- as.data.frame(prop_table)
+  
+  colnames(freq_df) <- c(variable1, variable2, "count")
+  colnames(prop_df) <- c(variable1, variable2, "Porcentaje")
+  
+  result <- merge(freq_df, prop_df, by = c(variable1, variable2))
+  
+  result$Porcentaje <- round(as.numeric(result$Porcentaje), 2)
+  result <- result[result$count > 0, ]
+  
+  return(result)
+}
+
+```
+
+
+```{r include=FALSE}
+calc_ci <- function(x, conf = 0.95) {
+  se <- sd(x) / sqrt(length(x))
+  alpha <- 1 - conf
+  error_margin <- qt(1 - alpha / 2, df = length(x) - 1) * se
+  mean_x <- mean(x)
+  lower_bound <- mean_x - error_margin
+  upper_bound <- mean_x + error_margin
+  return(c(lower_bound, upper_bound))
+}
+
+calc_ci_pi <- function(x, conf = 0.95) {
+  p_hat <- mean(x)
+  n <- length(x)
+  alpha <- 1 - conf
+  se <- sqrt(p_hat * (1 - p_hat) / n)
+  z <- qnorm(1 - alpha / 2)
+  error_margin <- z * se
+  lower_bound <- p_hat - error_margin
+  upper_bound <- p_hat + error_margin
+  return(c(lower_bound, upper_bound))
+}
+
+```
+
+```{r}
+htmltools::HTML('
+<!-- Contenedor para los botones -->
+<div id="sidebar-buttons">
+  <button id="showSidebar" class="btn btn-primary">Mostrar Selectores</button>
+  <button id="hideSidebar" class="btn btn-secondary">Ocultar Selectores</button>
+</div>
+')
+```
+
+Presentación {data-navmenu="El Sistema" data-orientation=rows}
+===================================================
+
+
+```{r}
+htmltools::HTML('
+<div class="container mt-5" style="font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.2;">
+
+<div class="container mt-5" style="font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.2; border: 1.1px solid #337AB7;">
+<div class = "degradado-margin", style = "margin-top: 40px; color: white padding: 5px;">
+ Proyecto AF y Salud: Sistema de Vigilancia
+ </div>
+  <!-- Fila principal -->
+  <div class="row mt-4" style="text-align: center;">
+
+    <!-- Columna de textos -->
+    <div class="col-md-6" style="text-align: justify;">
+     
+      <p>La aplicación presenta en forma de panel la visualización y analítica detallada de las características de las mujeres con la que se emite un informe final sobre el estado de la práctica de AF en la mujer <p>
+     <h6>  Para una mejor comprensión y manejo de las variables, los resultados se han presentado conforme a las secciones:</h6>
+      <ul class="list-group mt-5">
+        <li class="list-group-item d-flex justify-content-between align-items-center">PRACTICA AF</li>
+        <li class="list-group-item d-flex justify-content-between align-items-center">HÁBITOS SALUDABLES Y ALIMENTACIÓN</li>
+        <li class="list-group-item d-flex justify-content-between align-items-center">ASPECTOS FÍSICOS Y GINECOLÓGICOS</li>
+        <li class="list-group-item d-flex justify-content-between align-items-center">CÁNCER DE MAMA Y PRÁCTICA DE AF</li>
+        <li class="list-group-item d-flex justify-content-between align-items-center">INFORME GENERAL</li>
+      </ul>
+      
+    </div>
+    <!-- Columna de imagen en tarjeta -->
+     <div class="col-md-1"></div>
+    <div class="col-md-5">
+     <div class=row  style="text-align: justify;"> <p>Los datos presentados en este Panel provienen de la encuesta sobre AF y Salud diseñada a tal efecto.</p></div>
+     <div class="row mt-2"></div>
+      <div class="card text-white bg-secondary mb-10 style="max-width: 60rem;"">
+        <div class="card-body">
+          <img src="cuestionario.png" alt="Cabecera imagen cuestionario" class="img-fluid mx-auto d-block">
+        </div>
+        <div class="card-footer">
+          <p class="text-center mb-0"><a href="https://cuantos01.unizar.es/tfm/cuestionario.php" target="_blank" class="text-white">Enlace al cuestionario</a></p>
+        </div>
+      </div>
+    </div>
+  </div>
+  </br>
+  </div>
+  <!-- Nueva fila con dos tarjetas -->
+   <div class="row mt-4">
+    <div class = "panel-heading col-md-12", style = "margin-top: 4px margin-bottom: 10px;"> Términos de uso y Acrónimos </div>
+       <div class="row mt-4"> </div>
+    <div class="col-md-6">
+      <div class="card text-white bg-info mb-3">
+        <div class="card-header">TÉRMINOS DE USO</div>
+        <div class="card-body">
+          <p class="card-text">Los resultados agregados presentados en los gráficos y tablas de este panel pueden ser utilizados por los interesados sin ninguna limitación. Los datos primarios están sujetos a la Política de privacidad de la Universidad de Zaragoza y no están disponibles. Si usted está interesado en ellos con fines de investigación puede ponerse en contacto con las investigadoras quienes evaluaran la posibilidad de cesión.</p>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-1"></div><div class="col-md-4">
+      <div class="card text-white bg-info mb-3">
+        <div class="card-header">ACRONIMOS UTILIZADOS</div>
+        <div class="card-body">
+          <p class="card-text"> AF: Actividad físico-deportiva recreativa</p>
+          <p class="card-text"> MET: Consumo metabólico equivalente</p>
+          <p class="card-text"> AFL: Actividad físico-deportiva suave (<6 MET)</p>
+          <p class="card-text"> IMC: Índice de masa corporal</p>
+        </div>
+      </div>
+    </div> 
+  </div>
+ <div class="row mt-4">
+  <div class="col-md-12">
+  <div class = "panel-heading", style = "margin-top: 4px;"> Resumen de variables, modalidades y datos ausentes </div>
+')
+
+
+
+```
+
+
+```{r include=FALSE}
+output$df_summary <- renderTable({
+  df_summary<-dfSummary(responses, headings = FALSE, graph.col = FALSE)
+  df_summary<-data.frame(df_summary)
+  df_summary<-df_summary[ ,-1]
+  df_summary<-df_summary[-1, ]
+  colnames(df_summary)<-c("Variables","Modalidades","Frecuencias","Datos Válidos", "Datos Faltantes")
+  df_summary
+})
+```
+
+### 
+
+```{r}
+tableOutput(("df_summary"))
+```
+
+
+```{r}
+SD_filtered_dataset <- reactive({
+  filtered_data(SD_dataset)
+})
+
+```
+
+```{r}
+output$data_table_sd <- renderDataTable({
+  data_table_sd <- datatable(SD_filtered_dataset(), extensions = 'Buttons', options = list(dom ='Bfrtip',
+     searching = FALSE, info = FALSE
+  ))
+  return(data_table_sd)
+})
+
+```
+
+
+```{r}
+htmltools::HTML('
+</div>
+    <div class="col-md-12" style="text-align: justify;">
+  <div class = "panel-heading", style = "margin-top: 4px;"> Variables Categorizadas y Calculadas </div>
+  </br>
+ <table class="table table-info">
+  <thead>
+    <tr>
+      <th scope="col"><font style="vertical-align: inherit;"> Variable </font></font></th>
+      <th scope="col"><font style="vertical-align: inherit;">Variables observadas</font></font></th>
+      <th scope="col"><font style="vertical-align: inherit;"> Categorias </font></font></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr class="table-light">
+      <th scope="row"><font style="vertical-align: inherit;">IMC</font></font></th>
+      <td><font style="vertical-align: inherit;">
+      <div class="latex"> Peso(kg)/Altura^2(m)</div>
+</font></font></td>
+      <td><font style="vertical-align: inherit;"><p>  Peso insuficiente </p>
+       <p> Peso normal </p>
+        <p>  Sobrepeso </p>
+         <p> Obesidad </p> </font></font></td>
+         </tr>
+         <tr class="table-light">
+          <th scope="row"><font style="vertical-align: inherit;">  EDAD PRIMER EMBARAZO_CAT</font></font></th>
+      <td><font style="vertical-align: inherit;">
+          PrimerEmbarazoSD
+</font></font></td>
+      <td><font style="vertical-align: inherit;">
+       <p> Antes de 25 años </p>
+        <p> Entre 26 y 35 años </p>
+         <p> Entre 36 y 40 años </p> 
+         <p> Entre 41 y 45 años </p>
+         <p> Más de 45 años </p></font></font></td>
+    </tr>
+    <tr class="table-light">
+    <th scope="row"><font style="vertical-align: inherit;">VIDA FÉRTIL</font></font></th>
+      <td><font style="vertical-align: inherit;">
+         <p> MenopausiaAFGC-PrimeraMenstruacionAFGC</p>
+</font></font></td>
+      <td><font style="vertical-align: inherit;">
+         <p> Normal </p>
+         <p> Larga </p></font></font></td>
+    </tr>
+     <tr class="table-light">
+          <th scope="row"><font style="vertical-align: inherit;"> PROTECCIÓN GINECOLÓGICA</font></font></th>
+      <td><font style="vertical-align: inherit;">
+          PrimerEmbarazoSD <=27 & VidaFertil= Normal & NumEmbarazos >= 1
+</font></font></td>
+      <td><font style="vertical-align: inherit;">
+        <p> Con Protección </p>
+         <p> Sin Protección </p></font></font></td>
+    </tr>
+    <tr class="table-light">
+    <th scope="row"><font style="vertical-align: inherit;">ESTILO DE VIDA</font></font></th>
+      <td><font style="vertical-align: inherit;">
+         <p> TabacoHSA=No AlcoholHSA= Esporádicamente VegetarianaHSA= Si</p>
+          <p> PuntuacionAlimentacion > 3 TiempoSedentario < 4h  PracticaAF=Si TiempoAF>150 </p>
+</font></font></td>
+      <td><font style="vertical-align: inherit;">
+         <p> Muy Saludable </p>
+       
+    </tr>
+    <tr class="table-light">
+    <th scope="row"><font style="vertical-align: inherit;">ESTILO DE VIDA</font></font></th>
+      <td><font style="vertical-align: inherit;">
+         <p> TabacoHSA=No AlcoholHSA= Esporádicamente VegetarianaHSA= Si</p>
+          <p> PuntuacionAlimentacion > 3 TiempoSedentario < 4h  PracticaAF=Si TiempoAF>150 </p>
+</font></font></td>
+      <td><font style="vertical-align: inherit;">
+         <p> Muy Saludable </p>
+       
+    </tr>
+    <tr class="table-light">
+    <th scope="row"><font style="vertical-align: inherit;">ESTILO DE VIDA</font></font></th>
+      <td><font style="vertical-align: inherit;">
+         <p> TabacoHSA!=No AlcoholHSA != Esporádicamente VegetarianaHSA= Si</p>
+          <p> PuntuacionAlimentacion > 3 TiempoSedentario < 4h  PracticaAF=Si TiempoAF>150 </p>
+</font></font></td>
+      <td><font style="vertical-align: inherit;">
+         <p> POCO SALUDABLE </p>
+    </tr>
+   
+  </tbody>
+</table>
+</div>
+
+</div></div>
+')
+```
+
+Datos disponibles {data-orientation=rows data-navmenu="El Sistema"}
+===============================================
+
+
+##row1
+---------------------------------------------------
+
+```{js}
+$(document).ready(function(){
+  toggleSidebar();
+});
+```
+
+
+### DATOS Socio-demográficos <em> (Sección SD)</em>
+
+```{r}
+dataTableOutput("data_table_sd")
+
+```
+
+
+```{r}
+output$data_table_af <- renderDataTable({
+  data_table_af <- datatable(AF_filtered_dataset(), extensions = 'Buttons', options = list(dom ='Bfrtip',
+    buttons = c('csv'), searching = FALSE, info = FALSE
+  ))
+  return(data_table_af)
+})
+
+```
+
+##row2
+-----------------------------------------------------
+### DATOS Práctica de AF <em> (Sección AFR)</em>
+```{r}
+dataTableOutput("data_table_af")
+
+```
+
+
+
+```{r}
+output$data_table_hsa <- renderDataTable({
+  data_table_hsa <- datatable(HSA_filtered_dataset(),extensions = 'Buttons', options = list(dom ='Bfrtip',
+    buttons = c('csv'), searching = FALSE, info = FALSE
+  ))
+  return(data_table_hsa)
+})
+
+```
+##row3
+---------------------------------------------------
+### DATOS Hábitos Saludables <em> (Sección HSA)</em>
+```{r}
+dataTableOutput("data_table_hsa")
+
+```
+
+```{r}
+output$data_table_afgc <- renderDataTable({
+  data_table_afgc <- datatable(AFGC_filtered_dataset(), extensions = 'Buttons', options = list(dom ='Bfrtip',
+    buttons = c('csv'), searching = FALSE, info = FALSE
+  ))
+  return(data_table_afgc)
+})
+
+```
+
+
+
+```{r}
+output$data_table_c <- renderDataTable({
+  data_table_c <- datatable(AFBC_filtered_dataset(), extensions = 'Buttons', options = list(dom ='Bfrtip',
+    buttons = c('copy', 'csv'), searching = FALSE, info = FALSE
+  ))
+  return(data_table_c)
+})
+
+```
+
+##row4
+---------------------------------------------------
+### DATOS Variables físico-ginecólogicas <em> (Sección AFGC)</em>
+```{r}
+dataTableOutput("data_table_afgc")
+
+```
+##row5 
+---------------------------------------------------
+
+### DATOS Cáncer de mama <em> (Sección AFGC)</em>
+
+```{r}
+dataTableOutput("data_table_c")
+
+```
+
+
+
+
+
+Inputs{.sidebar data-width=190}
+===============================================
+
+
+### <span style="font-size:14pt;font-family:system-ui;color:white"> SELECCIONAR AÑO </span>
+```{r}
+# Creación de selectores
+selectInput("anyo_selector", label = " ",
+            choices = c("Todos años", levels(unique(responses_factors$AnyoEncuesta))))
+
+```
+### <span style="font-size:14pt;font-family:system-ui;color:white"> FILTRAR SEGÚN </span>
+```{r echo=FALSE}
+
+selectInput("edad_selector", "Edad",
+            choices = c("Todas edades", levels(unique(AF_dataset$EdadSD))))
+
+selectInput("formacion_selector", "Formación",
+            choices = c("Todos niveles", levels(unique(AF_dataset$FormacionSD))))
+
+selectInput("laboral_selector", "Situación Laboral",
+            choices = c("Todas situaciones", levels(unique(AF_dataset$SituacionLaboralSD))))
+
+selectInput("personal_selector","Situación Personal", choices = c("Todas situaciones", levels(unique(AF_dataset$PersonalSD))))
+
+```
+
+
+Socio-Demografia { data-navmenu="El Sistema"} 
+==================================================
+
+```{js}
+$(document).ready(function(){
+  toggleSidebar();
+});
+```
+
+
+column1{data-width=280}
+--------------------------------------------------
+
+
+### Tamaño de la muestra
+```{r echo=FALSE}
+
+output$women_box <- renderValueBox({
+    valueBox(
+      value = length(SD_filtered_dataset()$EdadSD),
+      subtitle = "Nº de Mujeres"
+  )
+})
+
+```
+
+```{r}
+valueBoxOutput("women_box", width = "100%")
+```
+
+
+
+### <span style="font-size: 80%;"> SD5- </span> Vive CON PAREJA
+```{r}
+
+output$gauge_plot_pareja <- renderGauge({
+  rate <- table(SD_filtered_dataset()$ParejaSD)
+  relative_rate <- prop.table(rate)
+  rate <- as.numeric(relative_rate["Sí"] * 100)
+  gauge(rate, min = 0, max = 100, symbol = '%',    gaugeSectors(
+    success = c(80, 100), warning = c(40, 79),  danger = c(0, 39)
+  ))
+})
+```
+
+```{r}
+gaugeOutput("gauge_plot_pareja")
+```
+
+
+### <span style="font-size: 80%;"> SD6- </span>Vive SIN HIJOS MENORES
+```{r}
+
+output$gauge_plot_menores <- renderGauge({
+  rate <- table(SD_filtered_dataset()$MenoresSD)
+  relative_rate <- prop.table(rate)
+  rate <- as.numeric(relative_rate["Ninguno"] * 100)
+  gauge(rate, min = 0, max = 100, symbol = '%', gaugeSectors(
+    success = c(80, 100), warning = c(40, 79), danger = c(0, 39)
+  ))
+})
+```
+
+```{r}
+gaugeOutput("gauge_plot_menores")
+```
+
+
+### <span style="font-size: 80%;"> SD7- </span> Vive CON MAYORES/DISCAPACITADOS
+```{r}
+
+output$gauge_plot_mayores <- renderGauge({
+  rate <- table(SD_filtered_dataset()$MayoresSD)
+  relative_rate <- prop.table(rate)
+  rate <- as.numeric(relative_rate["Sí"] * 100)
+  gauge(rate, min = 0, max = 100, symbol = '%', gaugeSectors(
+    success = c(80, 100), warning = c(40, 79), danger = c(0, 39)
+  ))
+})
+```
+
+```{r}
+gaugeOutput("gauge_plot_mayores")
+```
+
+
+column2{data-width=450}
+--------------------------------------------------
+
+### <span style="font-size: 80%;"> SD1- </span>Distribución por EDAD
+
+```{r}
+
+output$bar_chart_age <- renderPlotly({
+  data <- get_frequencies(SD_filtered_dataset, "EdadSD")
+  data$Porcentaje <- as.numeric(gsub("%", "", data$Porcentaje))
+
+  bar_chart_age<-ggplot(data, aes(x = Modalidad, y = Porcentaje, fill = Modalidad)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = paleta_viridis_laura) +
+    labs(title = "", x = "", y = "Porcentaje") +
+    theme_stata() +
+    theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1))
+  return(ggplotly(bar_chart_age))
+})
+
+```
+
+```{r echo=FALSE}
+fillCol(height = 350, flex = c(1),
+plotlyOutput("bar_chart_age"))
+
+```
+
+
+
+##column3
+------------------------------------------------------
+### <span style="font-size: 80%;"> SD2- </span>Distribución por SITUACIÓN LABORAL
+
+```{r}
+output$treemap_laboral <- renderPlotly({
+  data <- get_frequencies(SD_filtered_dataset, "SituacionLaboralSD")
+  data$Porcentaje <- as.numeric(gsub("%", "", data$Porcentaje))
+  plot_ly(data, 
+          type = "treemap", 
+          labels = ~paste(Modalidad, "<br>", Porcentaje, "%", sep = ""),  
+          parents = ~"", 
+          values = ~Porcentaje, 
+          hoverinfo = "label",  
+          marker = list(colors = paleta_viridis_laura)) %>%
+    layout(treemap =list(textposition = "middle center"))
+})
+```
+
+```{r echo=FALSE}
+fillCol(height = 350, flex = c(1),
+plotlyOutput("treemap_laboral", height ="100%"))
+
+```
+
+### <span style="font-size: 80%;"> SD3- </span> Distribución por FORMACIÓN ACADÉMICA
+```{r}
+output$barchar_academic <- renderPlotly({
+  data <- get_frequencies(SD_filtered_dataset,"FormacionSD")
+  plot_ly(data, 
+          x = ~Porcentaje, 
+          y = ~Modalidad, 
+          type = "bar", 
+          orientation = 'h', 
+          marker = list(color = paleta_viridis_laura), 
+          textposition = 'none') %>%
+    layout(title = "",  
+           xaxis = list(title = "", showticklabels = FALSE),  
+           yaxis = list(title = "", showticklabels = TRUE),  
+           showlegend = FALSE)
+})
+
+
+```
+
+```{r echo=FALSE}
+fillCol(height = 350, flex = c(1),
+plotlyOutput("barchar_academic", height ="100%"))
+
+```
+
+
+```{r}
+# Reactive AF_dataset
+
+AF_filtered_dataset<-reactive({filtered_data(AF_dataset)})
+```
+
+
+```{r}
+# Output plots in page Visualization AF
+
+output$pie_chart_ui<-renderUI({
+    data<-get_frequencies(AF_filtered_dataset,"PracticaAF")
+    if (nrow(data) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+    }
+    else{
+      plotlyOutput("pie_chart_render")
+    }
+}  
+)
+
+output$pie_chart_render <- renderPlotly({
+  data <- get_frequencies(AF_filtered_dataset, "PracticaAF")
+  plot_ly(data, labels = ~Modalidad, values = ~Porcentaje, type = "pie", hole = 0.5,
+          marker = list(colors = paleta_viridis_laura)) %>%
+    layout(title = "",
+           xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+           yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+           legend = list(orientation = "h", x = 0.5, y = -0.1, xanchor = 'center', traceorder = 'normal',
+                         font = list(size = 10)))
+})
+
+output$radial_chart_ui<-renderUI({
+    data<-get_frequencies(AF_filtered_dataset,"FrecuenciaAF")
+    if (nrow(data) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+    }
+    else{
+      plotlyOutput("radial_chart_render")
+    }
+})  
+output$radial_chart_render <- renderPlotly({
+  data <- get_frequencies(AF_filtered_dataset,"FrecuenciaAF")
+  max_y <- max(as.numeric(gsub("%", "", data$Porcentaje)))  
+  plot_ly(data, type = "scatterpolar", fill = "toself", r = ~as.numeric(gsub("%", "", Porcentaje)), theta = ~Modalidad,
+          line = list(color = "rgb(31, 119, 180)"), marker = list(color = "rgb(31, 119, 180)")) %>%
+    layout(polar = list(radialaxis = list(visible = TRUE, range = c(0, max_y))),
+           showlegend = FALSE)
+})
+
+output$histoplot_ui<-renderUI({
+    data <- AF_filtered_dataset() 
+    data <- data[!is.na(data$EdadComienzoAF), ]
+    if (nrow(data) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+    }
+    else{
+      plotlyOutput("histoplot_render")
+    }
+}) 
+  
+output$histoplot_render <- renderPlotly({
+  data <- AF_filtered_dataset() 
+  data <- data[!is.na(data$EdadComienzoAF), ]
+  data$EdadSD <- as.factor(data$EdadSD)
+  
+  histoplot <- ggplot(data, aes(x = EdadComienzoAF, y = ..density.., group = EdadSD, color = EdadSD)) +
+    geom_freqpoly(binwidth = 10, size = 1) +  
+    scale_color_viridis_d(name = "Edad") +  # Cambiar el nombre de la leyenda aquí
+    labs(x = "", y = "") +
+    theme_minimal() +
+    theme(legend.position = "right", legend.text = element_text(size = 6),
+          legend.key.width = unit(0.3, "cm"),
+          legend.spacing.x = unit(0.1, "cm")) +  
+    guides(fill = guide_legend(nrow = 1, title.position = "right", title.hjust = 0.5)) 
+  ggplotly(histoplot)
+})
+
+output$caminarplot_ui<-renderUI({
+    data<-get_conditional_frequencies(AF_filtered_dataset,"CaminarAF", "EdadSD")
+    if (nrow(data) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+    }
+    else{
+      plotlyOutput("caminarplot_render")
+    }
+}  
+)
+
+output$caminarplot_render <- renderPlotly({
+  data <- get_conditional_frequencies(AF_filtered_dataset, "CaminarAF", "EdadSD")
+  
+  caminarplot <- ggplot(data, aes(x = CaminarAF, y = Porcentaje, fill = EdadSD)) +
+    geom_bar(stat = "identity", position = "stack") +
+    labs(x = "", y = "", fill = "Edad") +  # Establecer el nombre de la variable del fill en labs()
+    scale_fill_viridis_d() + 
+    theme(legend.position = "right", legend.text = element_text(size = 6),
+          legend.key.width = unit(0.3, "cm"),
+          legend.spacing.x = unit(0.1, "cm")) +  
+    guides(fill = guide_legend(nrow = 1, title.position = "right", title.hjust = 0.5)) 
+  
+  ggplotly(caminarplot)
+})
+
+
+```
+
+INFORME FINAL {data-navmenu="El Sistema" data-orientation=rows}
+===============================================
+
+
+
+```{r}
+filtered_dataset <- AF_dataset %>% 
+    filter(!is.na(PracticaAF_cat)) %>%
+    select(EdadSD, PracticaAF_cat)
+output$radialPlot_edad <- renderPlotly({
+    grouped_data<-get_conditional_frequencies(filtered_dataset,"EdadSD","PracticaAF_cat")
+  grouped_data$Porcentaje <- as.numeric(sub("%", "", grouped_data$Porcentaje))
+    plot_ly(data = grouped_data, type = 'scatterpolar', mode = 'lines', 
+                        r = ~Porcentaje, theta = ~EdadSD, 
+                        fill = 'toself', 
+                        marker = list(color = 'viridis')) %>%  
+    layout(polar = list(radialaxis = list(visible = TRUE, range = c(0, max(grouped_data$Porcentaje))), tickformat = "%"),
+           showlegend = FALSE)
+  })
+
+
+output$tablep_edad <- renderTable({
+    filtered_dataset <- AF_dataset %>% 
+    filter(!is.na(PracticaAF_cat))%>%
+    mutate(PracticaAF_bin = ifelse(PracticaAF_cat == "Sí", 1, 0))%>%
+      dplyr::group_by(EDAD = sjlabelled::as_label(EdadSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci_pi(PracticaAF_bin)[1]*100,
+        Ext.Sup = calc_ci_pi(PracticaAF_bin)[2]*100
+      )  %>%
+    mutate(
+      Ext.Inf = paste0(round(Ext.Inf, 2), "%"),
+      Ext.Sup = paste0(round(Ext.Sup, 2), "%")
+    )
+},digits=2)
+
+
+```
+
+```{r}
+filtered_dataset <- AF_dataset %>% 
+  filter(!is.na(PracticaAF_cat)& !is.na(FormacionSD)) %>%
+  select(FormacionSD, PracticaAF_cat)
+output$radialPlot_formacion <- renderPlotly({
+    grouped_data<-get_conditional_frequencies(filtered_dataset,"FormacionSD","PracticaAF_cat")
+  grouped_data$Porcentaje <- as.numeric(sub("%", "", grouped_data$Porcentaje))
+    plot_ly(data = grouped_data, type = 'scatterpolar', mode = 'lines', 
+                        r = ~Porcentaje, theta = ~FormacionSD, 
+                        fill = 'toself', 
+                        marker = list(color = 'viridis')) %>%  
+    layout(polar = list(radialaxis = list(visible = TRUE, range = c(0, max(grouped_data$Porcentaje))), tickformat = "%"),
+           showlegend = FALSE)
+  })
+
+output$tablep_formacion <- renderTable({
+     filtered_dataset <- AF_dataset %>% 
+     filter(!is.na(PracticaAF_cat) &(!is.na(FormacionSD))) %>%
+      mutate(PracticaAF_bin = ifelse(PracticaAF_cat == "Sí", 1, 0))%>%
+      dplyr::group_by(FORMACION = sjlabelled::as_label(FormacionSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci_pi(PracticaAF_bin)[1]*100,
+        Ext.Sup = calc_ci_pi(PracticaAF_bin)[2]*100
+      ) %>%
+    mutate(
+      Ext.Inf = paste0(round(Ext.Inf, 2), "%"),
+      Ext.Sup = paste0(round(Ext.Sup, 2), "%")
+    )
+},digits=2)
+
+```
+
+
+```{r}
+ filtered_dataset <- AF_dataset %>% 
+  filter(!is.na(PracticaAF_cat)& !is.na(SituacionLaboralSD)) %>%
+  select(SituacionLaboralSD, PracticaAF_cat)
+output$radialPlot_laboral <- renderPlotly({
+    grouped_data<-get_conditional_frequencies(filtered_dataset,"SituacionLaboralSD","PracticaAF_cat")
+  grouped_data$Porcentaje <- as.numeric(sub("%", "", grouped_data$Porcentaje))
+    plot_ly(data = grouped_data, type = 'scatterpolar', mode = 'lines', 
+                        r = ~Porcentaje, theta = ~SituacionLaboralSD, 
+                        fill = 'toself', 
+                        marker = list(color = 'viridis')) %>%  
+    layout(polar = list(radialaxis = list(visible = TRUE, range = c(0, max(grouped_data$Porcentaje))), tickformat = "%"),
+           showlegend = FALSE)
+  })
+
+output$tablep_laboral <- renderTable({
+   filtered_dataset <- AF_dataset %>% 
+    filter(!is.na(PracticaAF_cat)& !is.na(SituacionLaboralSD)) %>% 
+      mutate(PracticaAF_bin = ifelse(PracticaAF_cat == "Sí", 1, 0))%>%
+      dplyr::group_by(LABORAL = sjlabelled::as_label(SituacionLaboralSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci_pi(PracticaAF_bin)[1]*100,
+        Ext.Sup = calc_ci_pi(PracticaAF_bin)[2]*100
+      ) %>%
+    mutate(
+      Ext.Inf = paste0(round(Ext.Inf, 2), "%"),
+      Ext.Sup = paste0(round(Ext.Sup, 2), "%")
+    )
+},digits=2)
+
+```
+
+```{r}
+filtered_dataset <- AF_dataset %>% 
+  filter(!is.na(PracticaAF_cat)& !is.na(PersonalSD)) %>%
+  select(PersonalSD, PracticaAF_cat)
+output$radialPlot_personal <- renderPlotly({
+    grouped_data<-get_conditional_frequencies(filtered_dataset,"PersonalSD","PracticaAF_cat")
+  grouped_data$Porcentaje <- as.numeric(sub("%", "", grouped_data$Porcentaje))
+    plot_ly(data = grouped_data, type = 'scatterpolar', mode = 'lines', 
+                        r = ~Porcentaje, theta = ~PersonalSD, 
+                        fill = 'toself', 
+                        marker = list(color = 'viridis')) %>%  
+    layout(polar = list(radialaxis = list(visible = TRUE, range = c(0, max(grouped_data$Porcentaje))), tickformat = "%"),
+           showlegend = FALSE)
+  })
+
+
+output$tablep_personal <- renderTable({
+       filtered_dataset <- AF_dataset %>% 
+  filter(!is.na(PracticaAF_cat)& !is.na(PersonalSD)) %>%
+       mutate(PracticaAF_bin = ifelse(PracticaAF_cat == "Sí", 1, 0))%>%
+      dplyr::group_by(PERSONAL = sjlabelled::as_label(PersonalSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci_pi(PracticaAF_bin)[1]*100,
+        Ext.Sup = calc_ci_pi(PracticaAF_bin)[2]*100
+      ) %>%
+    mutate(
+      Ext.Inf = paste0(round(Ext.Inf, 2), "%"),
+      Ext.Sup = paste0(round(Ext.Sup, 2), "%")
+    )
+},digits=2)
+
+```
+
+```{r}
+fluidPage(
+  div(class = "container",
+      div(class = "row",
+              tags$div(class = "degradado", style = " color: white; padding: 10px; text-align:center", "INFORME DEL ESTADO de la PRÁCTICA DE AF en la mujer en España en el periodo seleccionado"),
+              tags$div(class = "panel-heading", style = "margin-top: 10px;", "PARTICIPACIÓN EN AF de la mujer"),
+              tags$div(class = "resume-txt", style = "text-align: justify; font-size: 12pt;", 
+                       "La participación en AF recreativa en la mujer española es muy heterogénea, difiriendo los porcentajes, en mayor o menor medida, de  la edad, el nivel académico, la situación laboral y la situación ersonal como se observa en las  Figuras 1,2,3 y 4.  El porcentaje de participación en AF de la población femenina se estima mediante los Intervalos de Confianza al 95% según sus características."),
+        div(class="row spaced-row"),
+          div(class = "col-md-6",
+           style = "text-align: center;",
+           HTML("<p style='text-align:center; font-size:normal; color: #337AB7;'><em>Figura 1:</em> Porcentaje de participación en AF por Edad</p>"), plotlyOutput("radialPlot_edad")
+
+        ), div(class = "col-md-6",
+           style = "text-align: center;", HTML("<p style='text-align:center; font-size:normal; color: #337AB7;'><em>Figura 2:</em> Porcentaje de participación en AF según Formación académica</p>"),
+            plotlyOutput("radialPlot_formacion")
+
+        )
+   ),
+div(class = "row spaced-row",
+   div(class = "col-md-6",
+           style = "text-align: center;",  HTML("<p style='text-align:center; font-size:normal; color: #337AB7;'><em>Figura 3:</em> Porcentaje de participación en AF según situación laboral</p>"),
+            plotlyOutput("radialPlot_laboral")
+
+        ), div(class = "col-md-6",
+           style = "text-align: center;", HTML("<p style='text-align:center; font-size:normal; color: #337AB7;'><em>Figura 4:</em> Porcentaje de participación en AF según Situación Personal</p>"),
+            plotlyOutput("radialPlot_personal")
+        )
+   ),
+div(class = "row big-spaced-row", div(class = "col-md-12", style = "text-align: center;",
+    h4("Intervalos de Confianza al 95% para la proporción de la población que participa en AF según características")),
+   div(class = "col-md-2",
+            tableOutput("tablep_edad")
+        ), div(class = "col-md-4",
+           tableOutput("tablep_formacion")
+        ),
+     div(class = "col-md-4",
+           tableOutput("tablep_laboral")),div(class = "col-md-2",
+           tableOutput("tablep_personal"))
+),
+tags$div(class = "resume-txt", style = "text-align: justify; font-size: 12pt;", 
+                       "A la vista de los intervalos obtenidos, se concluye que (FALTA PONER CONCLUSIONES) la proporción es decreciente con la edad")
+  )
+)
+
+```
+
+
+#row2
+-----------------------------------------
+
+
+```{r}
+filtered_dataset <- AF_dataset %>% 
+  filter(!is.na(TiempoAF) & !is.na(TipoAF))
+
+AFL_dataset<-filtered_dataset %>%
+    filter(TipoAF == "AFL")
+AFM_dataset<-filtered_dataset %>%
+    filter(TipoAF == "AFM") 
+AFV_dataset<-filtered_dataset %>%
+    filter(TipoAF == "AFV") 
+```
+
+
+
+```{r include=FALSE}
+library(dplyr)
+
+output$plotAF <- renderPlotly({
+  p <- ggplot(filtered_dataset, aes(x = EdadSD, y = TiempoAF, fill = EdadSD)) +
+    theme_stata() +
+    scale_fill_manual(values = paleta_viridis_laura) +
+    geom_boxplot()  +
+    stat_summary(fun = mean, geom = "point", shape = 17, colour = 'blueviolet', size = 4) +
+    facet_wrap(~ TipoAF) 
+   ggplotly(p) %>% layout(showlegend = FALSE)
+})
+output$tableAFL <- renderTable({
+    AFL_dataset %>% 
+      select(TiempoAF, EdadSD) %>% 
+      dplyr::group_by(EDAD = sjlabelled::as_label(EdadSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci(TiempoAF)[1],
+        Ext.Sup = calc_ci(TiempoAF)[2]
+      )
+},digits=0)
+
+output$tableAFM <- renderTable({
+    AFM_dataset %>% 
+      select(TiempoAF, EdadSD) %>% 
+      dplyr::group_by(EDAD = sjlabelled::as_label(EdadSD)) %>% 
+      dplyr::summarise(
+        Ext.inf = calc_ci(TiempoAF)[1],
+        Ext.sup = calc_ci(TiempoAF)[2]
+      )
+},digits = 0)  
+
+output$tableAFV <- renderTable({
+    AFV_dataset %>% 
+      select(TiempoAF, EdadSD) %>% 
+      dplyr::group_by(EDAD = sjlabelled::as_label(EdadSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci(TiempoAF)[1],
+        Ext.Sup = calc_ci(TiempoAF)[2]
+      )
+},digits=0) 
+
+output$plotAF_aca <- renderPlotly({
+  filtered_dataset <- filtered_dataset %>% 
+    filter(!is.na(FormacionSD))
+  p <- ggplot(filtered_dataset, aes(x = TiempoAF, y = FormacionSD, fill = FormacionSD)) +
+    theme_stata() + theme(axis.text.y = element_blank())+
+    scale_fill_manual(values = paleta_viridis_laura) +
+     geom_bar(stat = "identity", position = "dodge")+
+    stat_summary(fun = mean, geom = "point", shape = 17, colour = 'blueviolet', size = 4) +
+    facet_wrap(~ TipoAF) 
+   ggplotly(p) %>% layout(showlegend = TRUE)
+})
+output$tableAFL_aca <- renderTable({
+    AFL_dataset %>% 
+      select(TiempoAF, FormacionSD) %>% 
+      dplyr::group_by(FORMACION = sjlabelled::as_label(FormacionSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci(TiempoAF)[1],
+        Ext.Sup = calc_ci(TiempoAF)[2]
+      )
+},digits=0)
+
+output$tableAFM_aca <- renderTable({
+    AFM_dataset %>% 
+      select(TiempoAF, FormacionSD) %>% 
+      dplyr::group_by(FORMACION = sjlabelled::as_label(FormacionSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci(TiempoAF)[1],
+        Ext.Sup = calc_ci(TiempoAF)[2]
+      )
+},digits = 0)  
+
+output$tableAFV_aca <- renderTable({
+    AFV_dataset %>% 
+      select(TiempoAF, FormacionSD) %>% 
+      dplyr::group_by(FORMACION = sjlabelled::as_label(FormacionSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci(TiempoAF)[1],
+        Ext.Sup = calc_ci(TiempoAF)[2]
+      )
+},digits=0) 
+
+output$plotAF_lab <- renderPlotly({
+  filtered_dataset <- AF_dataset %>% 
+    filter(!is.na(TiempoAF) & !is.na(TipoAF)
+           &!is.na(SituacionLaboralSD))
+  p <- ggplot(filtered_dataset, aes(x = SituacionLaboralSD , y = TiempoAF, fill = SituacionLaboralSD)) +
+    theme_grey() +  theme(axis.text.x = element_blank())+
+    scale_fill_manual(values = paleta_viridis_laura) +
+    geom_boxplot()  +
+    stat_summary(fun = mean, geom = "point", shape = 17, colour = 'blueviolet', size = 4) +
+    facet_wrap(~ TipoAF) 
+   ggplotly(p) %>% layout(showlegend = TRUE)
+})
+
+output$tableAFM_lab <- renderTable({
+    AFM_dataset %>% 
+      select(TiempoAF, SituacionLaboralSD) %>% 
+      dplyr::group_by(LABORAL = sjlabelled::as_label(SituacionLaboralSD)) %>% 
+      dplyr::summarise(
+        Ext.inf = calc_ci(TiempoAF)[1],
+        Ext.sup = calc_ci(TiempoAF)[2]
+      )
+},digits = 0)  
+
+output$tableAFV_lab <- renderTable({
+    AFV_dataset %>% 
+      select(TiempoAF, SituacionLaboralSD) %>% 
+      dplyr::group_by(LABORAL = sjlabelled::as_label(SituacionLaboralSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci(TiempoAF)[1],
+        Ext.Sup = calc_ci(TiempoAF)[2]
+      )
+},digits=0) 
+
+output$tableAFL_lab <- renderTable({
+    AFL_dataset %>% 
+      select(TiempoAF, SituacionLaboralSD) %>% 
+      dplyr::group_by(LABORAL = sjlabelled::as_label(SituacionLaboralSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci(TiempoAF)[1],
+        Ext.Sup = calc_ci(TiempoAF)[2]
+      )
+},digits=0)
+
+output$plotAF_per <- renderPlotly({
+  filtered_dataset <- AF_dataset %>% 
+    filter(!is.na(TiempoAF) & !is.na(TipoAF) &!is.na(PersonalSD))
+  p <- ggplot(filtered_dataset, aes(x = PersonalSD, y = TiempoAF, fill = PersonalSD)) +
+    theme_stata() +theme(axis.text.x = element_blank())+
+    scale_fill_manual(values = paleta_viridis_laura) +
+     geom_bar(stat = "identity", position = "dodge")+
+    stat_summary(fun = mean, geom = "point", shape = 17, colour = 'blueviolet', size = 4) +
+    facet_wrap(~ TipoAF) 
+   ggplotly(p) %>% layout(showlegend = TRUE)
+})
+
+output$tableAFM_per <- renderTable({
+    AFM_dataset %>% 
+      select(TiempoAF, PersonalSD) %>% 
+      dplyr::group_by(PERSONAL = sjlabelled::as_label(PersonalSD)) %>% 
+      dplyr::summarise(
+        Ext.inf = calc_ci(TiempoAF)[1],
+        Ext.sup = calc_ci(TiempoAF)[2]
+      )
+},digits = 0)  
+
+output$tableAFV_per <- renderTable({
+    AFV_dataset %>% 
+      select(TiempoAF, PersonalSD) %>% 
+      dplyr::group_by(PERSONAL = sjlabelled::as_label(PersonalSD)) %>% 
+      dplyr::summarise(
+        Ext.inf = calc_ci(TiempoAF)[1],
+        Ext.sup = calc_ci(TiempoAF)[2]
+      )
+},digits=0) 
+
+output$tableAFL_per <- renderTable({
+    AFL_dataset %>% 
+      select(TiempoAF, PersonalSD) %>% 
+      dplyr::group_by(PERSONAL = sjlabelled::as_label(PersonalSD)) %>% 
+      dplyr::summarise(
+        Ext.Inf = calc_ci(TiempoAF)[1],
+        Ext.Sup = calc_ci(TiempoAF)[2]
+      )
+},digits=0)
+
+```
+
+
+```{r}
+fluidPage(
+   tags$div(class = "panel-heading", style = "margin-top: 10px;", "TIEMPO Y TIPO DE PRÁCTICA DE AF de la mujer"), tags$div(class = "resume-txt", style = "text-align: justify; font-size: 12pt;", 
+                       "La participación en AF recreativa en la mujer española es heterogénea y  difiere en mayor o menor medida de sus características: la edad, el nivel académico, la situación laboral y la situación ersonal como se muestra en la  Figura 1, Figura2, Figura 3 y Figura 4.  Se han obtenido y se presentan en las tablas los Intervalos de Confianza al 95% para la proporción de la población femenina que participa en AF según sus características."),
+   div(class = "container",div(class = "row big-spaced-row",
+        div(class = "col-md-12",
+           style = "text-align: left;", h5("Comparación del tiempo semanal de cada Tipo de AF por edad"),
+            plotlyOutput("plotAF"), HTML("<p style='text-align:center; font-size:normal; color: #337AB7;'><em>Figura 5:</em> Tiempo y Tipo de AF por Edad</p>")
+
+        ))),
+  div(class = "container",div(class = "row spaced-row", div(class = "col-md-4", style = "text-align: left;",h6("IC(95%) Tiempo medio de AFL "),tableOutput("tableAFL")), div(class = "col-md-4",style = "text-align: left;",h6("IC(95%) Tiempo medio de AFM"),style = "text-align: left;",tableOutput("tableAFM")), div(class = "col-md-4",style = "text-align: left;",h6("IC(95%) Tiempo medio de AFV"),style = "text-align: left;",tableOutput("tableAFV"))
+  ), tags$div(class = "resume-txt", style = "text-align: justify; font-size: 12pt;", 
+                       "A la vista de los intervalos obtenidos, se concluye que, por edades, únicamente las mujeres de menos de ... cumplirían con las directrices de la OMS alcanzando un efecto protector en el riesgo de Cáncer de mama")),
+  div(class = "container",div(class = "row big-spaced-row",
+        div(class = "col-md-12",style = "text-align: left;",
+            h5("Comparación del tiempo semanal de cada Tipo de AF según FORMACIÓN ACADÉMICA"),
+            plotlyOutput("plotAF_aca"), HTML("<p style='text-align:center; font-size:normal; color: #337AB7;'><em>Figura 6:</em> Tiempo y Tipo de AF por Formación Académica</p>")
+        ))),
+  div(class = "container",div(class = "row big-spaced-row", div(class = "col-md-4",style = "text-align: left;",h6("IC(95%) Tiempo medio de AFL "),tableOutput("tableAFL_aca")), div(class = "col-md-4",style = "text-align:left;",h6("IC(95%) Tiempo medio de AFM"), tableOutput("tableAFM_aca")), div(class = "col-md-4",style = "text-align: left;",h6("IC(95%) Tiempo medio de AFV"), tableOutput("tableAFV_aca"))
+  )), 
+  div(class = "container",div(class = "row big-spaced-row",
+        div(class = "col-md-12",
+            h5("Comparación del tiempo semanal de cada Tipo de AF por SITUACIÓN LABORAL"),
+            plotlyOutput("plotAF_lab"), HTML("<p style='text-align:center; font-size:normal; color: #337AB7;'><em>Figura 7:</em> Tiempo y Tipo de AF por Situación Laboral</p>")
+        ))),
+  div(class = "container",div(class = "row big-spaced-row", div(class = "col-md-4",h6("IC(95%) Tiempo medio de AFL "),tableOutput("tableAFL_lab")), div(class = "col-md-4",h6("IC(95%) Tiempo medio de AFM "),tableOutput("tableAFM_lab")), div(class = "col-md-4",h6("IC(95%) Tiempo medio de AFV "),tableOutput("tableAFV_lab"))
+  )),div(class = "container",div(class = "row big-spaced-row",
+        div(class = "col-md-12",
+            h5("Comparación por SITUACIÓN PERSONAL del tiempo semanal de cada Tipo de AF"),
+            plotlyOutput("plotAF_per"), HTML("<p style='text-align:center; font-size:normal; color: #337AB7;'><em>Figura 8:</em> Tiempo y Tipo de AF por Situación personal</p>")
+        ))),
+  div(class = "container",div(class = "row spaced-row", div(class = "col-md-4",h6("IC(95%) Tiempo medio de AFL "),tableOutput("tableAFL_per")), div(class = "col-md-4",h6("IC(95%) Tiempo medio de AFM "),tableOutput("tableAFM_per")), div(class = "col-md-4",h6("IC(95%) Tiempo medio de AFV "),tableOutput("tableAFV_per"))
+  ))
+  )
+```
+
+
+
+
+
+Visualización I {data-navmenu="Práctica AF"}
+=========================================================
+
+
+column1{data-width=300}
+-------------------------------------------------------------------
+
+### <span style="font-size: 80%;"> AFR1- </span> PRÁCTICA  AF
+```{r echo=FALSE}
+uiOutput("pie_chart_ui")
+```
+
+### <span style="font-size: 80%;"> AFR2- </span> FRECUENCIA de Práctica AF
+```{r echo=FALSE}
+uiOutput("radial_chart_ui")
+
+```
+
+column2{data-width=400}
+-------------------------------------------------------------------
+### <span style="font-size: 80%;"> AFR3,4- </span> TIEMPO y TIPO de AF
+
+```{r}
+output$ggpairs_plot_ui<-renderUI({
+  data<- AF_filtered_dataset()
+  data<- subset(data, !is.na(data$TiempoAF) & !is.na(data$TipoAF))
+  if(nrow(data)==0){
+     return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+  else{
+    plotlyOutput("ggpairs_plot_render")
+  }
+})
+
+output$ggpairs_plot_render<-renderPlotly({
+  data <- AF_filtered_dataset()
+  data <- subset(data, !is.na(data$TiempoAF) & !is.na(data$TipoAF))
+  data_to_plot <- subset(data, select = c(TiempoAF, TipoAF))
+  
+  ggpairs_plot <- ggpairs(data_to_plot, 
+                          columns = c("TiempoAF", "TipoAF"),
+                          aes(color = TipoAF),
+                          lower = list(continuous = wrap("density", bins = 10)),
+                          upper = list(continuous = "boxplot"),
+                          palette = "viridis") +
+    scale_fill_manual(values = paleta_viridis_laura) +  
+    theme(
+          legend.position = "top") + theme_stata()+
+    scale_color_manual(values = c("grey"))  
+  ggplotly(ggpairs_plot)
+})
+
+
+```
+
+```{r}
+uiOutput("ggpairs_plot_ui")
+```
+
+column1{data-width=300}
+-------------------------------------------------------------
+
+
+### <span style="font-size: 80%;"> AFR10-</span>Edad de COMIENZO Práctica AF
+```{r}
+uiOutput("histoplot_ui")
+```
+
+### <span style="font-size: 80%;"> AFR12- </span>Salir a CAMINAR
+```{r}
+uiOutput("caminarplot_ui")
+```
+
+
+Visualización II {data-navmenu="Práctica AF"}
+=========================================================
+
+column2
+-------------------------------------------------------------------
+### <span style="font-size: 80%;"> AFR11- </span> MOTIVACIÓN Práctica AF
+
+```{r}
+output$bar_motivacion_edad_ui<-renderUI({
+   grouped_data<- get_conditional_frequencies(AF_filtered_dataset(), "MotivacionAF", "EdadSD")
+  grouped_data$Porcentaje <- as.numeric(sub("%", "", grouped_data$Porcentaje))
+  if(nrow(grouped_data)==0){
+     return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+  else{
+    plotlyOutput("bar_motivacion_edad_render")
+  }
+})
+output$bar_motivacion_edad_render <- renderPlotly({
+  grouped_data<- get_conditional_frequencies(AF_filtered_dataset(), "MotivacionAF", "EdadSD")
+  grouped_data$Porcentaje <- as.numeric(sub("%", "", grouped_data$Porcentaje))
+
+  bar_motivacion_edad <- ggplot(grouped_data, aes(x = EdadSD, fill = MotivacionAF)) +
+    geom_bar(aes(y = ..prop..), stat = "count", position = "fill") +
+    scale_fill_viridis_d() +
+    theme_minimal() +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          panel.grid.major.y = element_line(color = "gray80", linetype = "dashed"),
+          legend.position = "right") +
+    labs(x = "Edad", y = "Porcentaje", fill = "MotivacionAF")
+
+  ggplotly(bar_motivacion_edad)
+})
+
+```
+
+```{r}
+uiOutput("bar_motivacion_edad_ui")
+```
+
+
+
+### <span style="font-size: 80%;"> AFR8,9- </span> Tipo de INSTALACIONES según TIPO de AF
+
+```{r}
+  
+output$radial_chart_instalaciones_tipo <- renderPlotly({
+  grouped_data<-get_conditional_frequencies(AF_filtered_dataset,"TipoAF","InstalacionesAF")
+  grouped_data$Porcentaje <- as.numeric(sub("%", "", grouped_data$Porcentaje))
+  radial_chart_instalaciones_tipo <- plot_ly(data = grouped_data, type = 'scatterpolar', mode = 'lines', 
+                        r = ~Porcentaje, theta = ~TipoAF, 
+                        color = ~InstalacionesAF, colors = "viridis",
+                        fill = 'toself', 
+                        marker = list(color = 'viridis')) %>%  
+    layout(polar = list(radialaxis = list(visible = TRUE, range = c(0, max(grouped_data$Porcentaje))), tickformat = "%"),
+           showlegend = TRUE)
+  
+  return(radial_chart_instalaciones_tipo)
+})
+
+```
+```{r}
+plotlyOutput("radial_chart_instalaciones_tipo")
+```
+
+column3
+----------------------------------------------------
+### <span style="font-size: 80%;"> AFR5- </span> DEPORTES Practicados
+
+
+```{r}
+output$sports_treemap_ui<-renderUI({
+  grouped_data<-get_conditional_frequencies(AF_filtered_dataset,"DeporteAF","EdadSD")
+  if(nrow(grouped_data)==0){
+   return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+  else{
+    plotOutput("sports_treemap_render")
+  }
+})
+
+output$sports_treemap_render <- renderPlot({
+ grouped_data<-get_conditional_frequencies(AF_filtered_dataset,"DeporteAF","EdadSD")
+  grouped_data$Porcentaje <- as.numeric(sub("%", "", grouped_data$Porcentaje))
+  sports_treemap<-ggplot(grouped_data, aes(area = Porcentaje, fill = EdadSD, label = DeporteAF)) +
+    geom_treemap() +
+    geom_treemap_text(colour = "white", place = "centre") + 
+    scale_fill_viridis_d() +  
+    facet_wrap(~ EdadSD, nrow = 2) +  
+    theme(legend.position = "none") 
+    sports_treemap
+   })
+```
+
+```{r}
+uiOutput("sports_treemap_ui")
+```
+
+### <span style="font-size: 80%;"> AFR- </span> Practica Individual, Libre y Participación en Competiciones
+```{r}
+output$mosaic_plot_ui<-renderUI({
+  data <- AF_filtered_dataset()
+  data<-subset(data, !is.na(data$CompeticionesAF)& !is.na(data$EnEquipoAF) &!is.na(data$LibreAF))
+  if(nrow(data)==0){
+   return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+  else{
+    plotOutput("mosaic_plot_render")
+  }
+})
+
+output$mosaic_plot_render <- renderPlot({
+  data <- AF_filtered_dataset()
+  data<-subset(data, !is.na(data$CompeticionesAF)& !is.na(data$EnEquipoAF) &!is.na(data$LibreAF))
+  
+  mosaic_plot <- ggplot(data = data) +
+    geom_mosaic(aes(x = product(LibreAF, EnEquipoAF, CompeticionesAF), fill = LibreAF)) +
+    scale_fill_manual(values = paleta_viridis_laura) 
+  mosaic_plot
+})
+```
+
+```{r}
+uiOutput("mosaic_plot_ui")
+```
+
+
+Analítica de Datos {data-navmenu="Práctica AF" data-orientation=rows}
+========================================================
+
+
+```{r}
+output$practicaAF <- DT::renderDataTable( 
+  {
+    frequency <- get_frequencies(AF_filtered_dataset,"PracticaAF")
+    if (nrow(frequency) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    rownames(frequency) <- NULL
+    frequency
+  }, options = list(
+    searching = FALSE,
+    lengthMenu = list(c(3), c(3)),
+    paging = FALSE,
+    info = FALSE
+  )
+)
+
+
+output$frecuenciaAF <- DT::renderDataTable( 
+  {
+    frequency <- get_frequencies(AF_filtered_dataset,"FrecuenciaAF")
+    if (nrow(frequency) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    rownames(frequency) <- NULL
+    frequency
+  },
+  options = list(
+    searching = FALSE,
+    lengthMenu = list(c(5), c(5)),
+    paging = FALSE,
+    info = FALSE
+  )
+)
+
+output$tipoAF <- DT::renderDataTable( 
+  {
+    frecuency <- get_frequencies(AF_filtered_dataset,"TipoAF")
+    if (nrow(frecuency) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    rownames(frecuency) <- NULL
+    frecuency
+  },
+  options = list(
+    searching = FALSE,
+    lengthMenu = list(c(4), c(4)),
+    paging = FALSE,
+    info = FALSE
+  )
+)
+
+output$caminarAF <- DT::renderDataTable( 
+  {
+    frequency <- get_frequencies(AF_filtered_dataset,"CaminarAF")
+    if (nrow(frequency) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    rownames(frequency) <- NULL
+    frequency
+  },
+  options = list(
+    searching = FALSE,
+    lengthMenu = list(c(4), c(4)),
+    paging = FALSE,
+    info = FALSE
+  )
+)
+
+output$motivosAF <- DT::renderDataTable( 
+  {
+    frecuency <- get_frequencies(AF_filtered_dataset,"MotivacionAF")
+    if (nrow(frecuency) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    rownames(frecuency) <- NULL
+    frecuency
+  },
+  options = list(
+    searching = FALSE,
+    lengthMenu = list(c(6), c(6)),
+    paging = FALSE,
+    info = FALSE,
+    rownames = FALSE
+  )
+)
+
+
+output$tiempoAF <- DT::renderDataTable( 
+  { 
+    data<-AF_filtered_dataset()
+    data<-subset(data,!is.na(data$TiempoAF))
+    if (nrow(frecuency) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    tiempoAF<-summary(data$TiempoAF)
+    tiempoAF
+  },
+  options = list(
+    searching = FALSE,
+    lengthMenu = list(c(5), c(5)),
+    paging = FALSE,
+    info = FALSE,
+    rownames = FALSE
+  )
+)
+
+
+output$instalacionesAF <- DT::renderDataTable( 
+  { 
+    frecuency <- get_frequencies(AF_filtered_dataset,"InstalacionesAF")
+    if (nrow(frecuency) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    rownames(frecuency) <- NULL
+    frecuency
+  },
+  options = list(
+    searching = FALSE,
+    lengthMenu = list(c(3), c(3)),
+    paging = FALSE,
+    info = FALSE,
+    rownames = FALSE
+  )
+)
+
+output$tiempoAF <- DT::renderDataTable( 
+  { 
+    data<-AF_filtered_dataset()
+    data <- subset(data, !is.na(data$TiempoAF))
+    if (nrow(data) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    tiempoAF <- data.frame(
+      Media = round(mean(data$TiempoAF), 0),
+      Mediana = round(median(data$TiempoAF), 0),
+      Mínimo = round(min(data$TiempoAF), 0),
+      Máximo = round(max(data$TiempoAF), 0),
+      Desviación = round(sd(data$TiempoAF), 0)
+    )
+   
+    tiempoAF <- t(tiempoAF)  
+    colnames(tiempoAF) <- c(" ")
+    tiempoAF
+  },
+  options = list(
+    searching = FALSE,
+    lengthMenu = list(c(5), c(5)),
+    paging = FALSE,
+    info = FALSE
+  )
+)
+
+
+output$comienzoAF <- DT::renderDataTable( 
+  { 
+    data <- AF_filtered_dataset()
+    data <- subset(data, !is.na(data$EdadComienzoAF))
+    if (nrow(data) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+    comienzoAF <- data.frame(
+      Media = round(mean(data$EdadComienzoAF), 0),
+      Mediana = round(median(data$EdadComienzoAF), 0),
+      Mínimo = round(min(data$EdadComienzoAF), 0),
+      Máximo = round(max(data$EdadComienzoAF), 0),
+      Desviación = round(sd(data$EdadComienzoAF), 0)
+    )
+    comienzoAF <- t(comienzoAF)  
+    colnames(comienzoAF) <- c(" ")
+    comienzoAF
+  },
+  options = list(
+    searching = FALSE,
+    lengthMenu = list(c(5), c(5)),
+    paging = FALSE,
+    info = FALSE
+  )
+)
+
+
+```
+
+
+# row1{data-height=250}
+-----------------------------------------------------------------------------
+### PRACTICA DE AF
+
+```{r}
+DT::dataTableOutput("practicaAF")
+
+```
+
+### FRECUENCIA de Práctica AF
+
+```{r}
+DT::dataTableOutput("frecuenciaAF")
+
+```
+### TIPO de AF
+
+```{r}
+DT::dataTableOutput("tipoAF")
+
+```
+
+#row2 {data-height=300}
+------------------------------------------------------
+
+### Edad COMIENZO PrácticaAF
+
+```{r}
+DT::dataTableOutput("comienzoAF")
+
+```
+
+###  Ir a CAMINAR
+```{r}
+DT::dataTableOutput("caminarAF")
+
+```
+
+### Estadísticas de TIEMPO semanal de AF
+
+```{r}
+DT::dataTableOutput("tiempoAF")
+
+```
+
+
+#row3 {data-height=300}
+------------------------------------------------------------
+### Tipo de INSTALACIONES AF
+
+```{r}
+DT::dataTableOutput("instalacionesAF")
+
+```
+
+### MOTIVACIÓN principal AF
+
+```{r}
+DT::dataTableOutput("motivosAF")
+
+```
+
+
+#row4 {data-height=250}
+------------------------------------------------------------
+### OTROS RESULTADOS
+
+
+```{r}
+output$porcentajeEquipo<-renderText({
+  porcentajeEquipo<-get_frequencies(AF_filtered_dataset,"EnEquipoAF")[[2,2]]
+  porcentajeEquipo<-paste("Entre las mujeres de las características seleccionadas que practican AF, las que lo hacen de forma individual representan un:", porcentajeEquipo,"%", sep=" ")
+  return(porcentajeEquipo)
+})
+
+```
+<div class="resume-box">
+```{r}
+textOutput("porcentajeEquipo")
+```
+</div>
+
+
+```{r}
+output$modas <- renderText({
+  porcentajeEquipo <- get_frequencies(AF_filtered_dataset,"DeporteAF")
+  if (nrow(porcentajeEquipo) == 0) {
+    return("No hay datos disponibles para las categorías seleccionadas.")
+  }
+  porcentajeEquipo <- porcentajeEquipo[order(porcentajeEquipo$Porcentaje, decreasing = TRUE), ]
+ 
+  
+  modas <- paste(porcentajeEquipo$Modalidad[1], porcentajeEquipo$Modalidad[2], sep = ", ")
+  modas<-paste("Entre las mujeres de las características seleccionadas que practican AF deportiva. los dos deportes a los que más se juega son:
+", modas, sep=" ")
+
+  return(modas)
+})
+
+```
+### Modas
+<div class="resume-box">
+```{r}
+textOutput("modas")
+```
+</div>
+
+```{r}
+
+output$libre <- renderText({
+  porcentajeLibre <- get_frequencies(AF_filtered_dataset,"LibreAF")
+  if (nrow(porcentajeLibre) == 0 || nrow(porcentajeLibre) < 2) {
+    return("No hay datos disponibles para las categorías seleccionadas.")
+  }
+  libre <- porcentajeLibre$Porcentaje[porcentajeLibre$Modalidad == "Libre"]
+  
+  if (length(libre) == 0) {
+    libre <- "0%"
+  }
+  libre<-paste("Entre las mujeres  de las características seleccionadas que practican AF, las que lo hacen de forma libre representan un",libre,"%", sep=" ")
+  libre
+})
+
+```
+### Libre
+<div class="resume-box">
+```{r}
+textOutput("libre")
+```
+</div>
+
+```{r}
+
+output$compe <- renderText({
+  porcentajeCompe <- get_frequencies(AF_filtered_dataset, "CompeticionesAF")
+  if (nrow(porcentajeCompe) == 0 || nrow(porcentajeCompe) < 2) {
+    return("No hay datos disponibles para las categorías seleccionadas.")
+  }
+  compe <- porcentajeCompe$Porcentaje[porcentajeCompe$Modalidad == "Sí"]
+  compe<-paste("Entre las mujeres  de las características seleccionadas que practican AF, las que participan en competiciones representan un",compe,"%", sep=" ")
+  
+  compe
+})
+
+
+```
+### Competiciones
+<div class="resume-box">
+```{r}
+textOutput("compe")
+```
+</div>
+
+Visualización{data-navmenu="Hábitos Saludables" data-orientation=rows}
+==========================================================
+## row1 {data-height=380}
+-------------------------------------------------------------
+```{r}
+HSA_filtered_dataset<-reactive({filtered_data(HSA_dataset)})
+```
+
+```{r}
+
+output$alcohol_af<-renderPlotly({
+
+conditional <- get_conditional_frequencies(HSA_filtered_dataset, "PracticaAF_cat", "AlcoholHSA")
+conditional_freq <- conditional %>%
+  mutate(Porcentaje = as.numeric(gsub("%", "", Porcentaje)),
+         Modalidad = NA)
+
+
+marginal <- get_frequencies(HSA_filtered_dataset, "AlcoholHSA")
+marginal_freq <- marginal %>%
+  mutate(PracticaAF_cat = "Total",
+         AlcoholHSA = Modalidad,
+         Porcentaje = as.numeric(gsub("%", "", Porcentaje)))
+
+
+combined_data <- bind_rows(conditional_freq, marginal_freq)
+
+
+alcohol_af <- plot_ly(combined_data, type = "scatterpolar",
+                        r = ~Porcentaje,
+                        theta = ~AlcoholHSA,
+                        color = ~PracticaAF_cat,
+                        colors = paleta_viridis_laura[1:3],
+                        hoverinfo = "text",
+                        fill= "toself",
+                        opacity = 0.5,
+                        text = ~paste(Modalidad, ": ", Porcentaje, "%"),
+                        mode = "lines",
+                        showlegend = TRUE) %>%
+    layout( polar = list(radialaxis = list(visible = TRUE, range = c(0, max(combined_data$Porcentaje) * 1.1))),
+           legend = list(font=list(size = 10),orientation = "h", x = 0, y = -0.2, title = list(text = "Práctica AF",font=list(size=12))))
+
+alcohol_af
+
+})
+```
+### <span style="font-size: 80%;"> HSA2- </span> Hábito de ALCOHOL según PRÁCTICA AF
+```{r}
+plotlyOutput("alcohol_af")
+```
+
+
+```{r}
+output$tabaco_af<-renderPlotly({
+
+conditional <- get_conditional_frequencies(HSA_filtered_dataset, "PracticaAF_cat", "TabacoHSA_cat")
+conditional_freq <- conditional %>%
+  mutate(Porcentaje = as.numeric(gsub("%", "", Porcentaje)),
+         Modalidad = NA)
+
+
+marginal <- get_frequencies(HSA_filtered_dataset, "TabacoHSA_cat")
+marginal_freq <- marginal %>%
+  mutate(PracticaAF_cat = "Total",
+         TabacoHSA_cat= Modalidad,
+         Porcentaje = as.numeric(gsub("%", "", Porcentaje)))
+
+combined_data <- bind_rows(conditional_freq, marginal_freq)
+
+
+tabaco_af <- plot_ly(combined_data, type = "bar",
+                      x = ~PracticaAF_cat,
+                      y = ~Porcentaje,
+                      color = ~TabacoHSA_cat,
+                      colors = paleta_viridis_laura[3:5],
+                      opacity = 0.9,
+                      hoverinfo = "text",
+                      text = ~paste(Modalidad, ": ", Porcentaje, "%"), showlegend = TRUE) %>%
+  layout(barmode = "group", 
+         xaxis = list(title = "Práctica AF",font=list(size=10)), yaxis = list(title = "", showticklabels = FALSE), legend = list(font=list(size = 10), orientation = "h", x = 0.4, y =1.5, title = list(text = "Tabaco",font=list(size=12))))
+tabaco_af
+
+})
+
+```
+
+
+### <span style="font-size: 80%;"> HSA1- </span>Hábito de TABACO según PRÁCTICA AF
+```{r}
+plotlyOutput("tabaco_af")
+```
+
+
+```{r}
+output$estres_af<-renderPlotly({
+
+conditional <- get_conditional_frequencies(HSA_filtered_dataset, "PracticaAF_cat", "EstresHSA")
+conditional_freq <- conditional %>%
+  mutate(Porcentaje = as.numeric(gsub("%", "", Porcentaje)),
+         Modalidad = NA)
+
+
+marginal <- get_frequencies(HSA_filtered_dataset, "EstresHSA")
+marginal_freq <- marginal %>%
+  mutate(PracticaAF_cat = "Total",
+         EstresHSA= Modalidad,
+         Porcentaje = as.numeric(gsub("%", "", Porcentaje)))
+
+combined_data <- bind_rows(conditional_freq, marginal_freq)
+
+
+estres_af <- plot_ly(combined_data, type = "bar",
+                      x = ~PracticaAF_cat,
+                      y = ~Porcentaje,
+                      color = ~EstresHSA,
+                      colors = paleta_viridis_laura[c(1,3,5)],
+                      hoverinfo = "text",
+                      text = ~paste(Modalidad, ": ", Porcentaje, "%"),
+                      showlegend = TRUE) %>%
+  layout(barmode = "stack",
+         xaxis = list(title = "Práctica AF",font = list(size = 8)), yaxis = list(title = "", showticklabels = FALSE), legend = list(font=list(size = 10), orientation = "h", x = 0.2, y =1.75 , title = list(text = "Estres",font=list(size=12))))
+estres_af
+
+})
+
+```
+# row2 {data-height=380}
+------------------------------------------------
+### <span style="font-size: 80%;"> HSA8- </span> ESTRES según PRACTICA AF
+```{r}
+plotlyOutput("estres_af")
+```
+
+
+```{r}
+
+output$sedentario_af<-renderPlotly({
+conditional <- get_conditional_frequencies(HSA_filtered_dataset, "PracticaAF_cat", "TiempoSedentarioHSA")
+conditional_freq <- conditional %>%
+  mutate(Porcentaje = as.numeric(gsub("%", "", Porcentaje)),
+         Modalidad = NA)
+
+
+marginal <- get_frequencies(HSA_filtered_dataset, "TiempoSedentarioHSA")
+marginal_freq <- marginal %>%
+  mutate(PracticaAF_cat = "Total",
+         TiempoSedentarioHSA = Modalidad,
+         Porcentaje = as.numeric(gsub("%", "", Porcentaje)))
+
+combined_data <- bind_rows(conditional_freq, marginal_freq)
+
+
+sedentario_af <- plot_ly(combined_data, type = "bar",
+                      x = ~Porcentaje,
+                      y = ~PracticaAF_cat,
+                      color = ~TiempoSedentarioHSA,
+                      colors = paleta_viridis_laura[1:3],
+                      hoverinfo = "text",
+                      text = ~paste(Modalidad, ": ", Porcentaje, "%"),
+                      showlegend = TRUE) %>%
+  layout(barmode = "group",
+         yaxis = list(title = "Práctica AF",font = list(size = 8)), xaxis = list(title = "", showticklabels = FALSE), legend = list(font=list(size = 9), orientation = "h", x = -0.35, y =1.60, title = list(text = "Tiempo Sedentario",font=list(size=12))))
+
+sedentario_af
+
+})
+
+```
+
+### <span style="font-size: 80%;"> HSA7- </span>Tiempo SEDENTARIO según PRÁCTICA AF
+```{r}
+plotlyOutput("sedentario_af")
+```
+
+```{r}
+
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
+
+output$combined_stats_wide <- renderDataTable({
+  contingency_table <- table(HSA_filtered_dataset()$PracticaAF_cat, HSA_filtered_dataset()$SaludableHSA)
+
+  stats_by_category <- lapply(split(HSA_filtered_dataset()$SaludableHSA, HSA_filtered_dataset()$PracticaAF_cat), function(x) {
+    list(
+      Media = round(mean(x, na.rm = TRUE), 2),
+      Mediana = median(x, na.rm = TRUE),
+      Desviación = round(sd(x, na.rm = TRUE), 2),
+      Moda = Mode(x)
+    )
+  })
+
+  stats_by_category_df <- do.call(rbind, lapply(stats_by_category, as.data.frame))
+
+  stats_by_category_df$PracticaAF_cat <- rownames(stats_by_category_df)
+
+  marginal_stats <- data.frame(
+    Media = round(mean(HSA_filtered_dataset()$SaludableHSA, na.rm = TRUE), 2),
+    Mediana = median(HSA_filtered_dataset()$SaludableHSA, na.rm = TRUE),
+    Desviación = round(sd(HSA_filtered_dataset()$SaludableHSA, na.rm = TRUE), 2),
+    Moda = Mode(HSA_filtered_dataset()$SaludableHSA),
+    PracticaAF_cat = "Total"
+  )
+
+  combined_stats <- rbind(stats_by_category_df, marginal_stats)
+
+  combined_stats_long <- combined_stats %>%
+    pivot_longer(cols = -PracticaAF_cat, names_to = "Estadísticos", values_to = "Value")
+
+  combined_stats_wide <- combined_stats_long %>%
+    pivot_wider(names_from = PracticaAF_cat, values_from = Value)
+
+  return(combined_stats_wide)
+}, options = list(
+  searching = FALSE,
+  lengthMenu = list(c(5), c(5)),
+  paging = FALSE,
+  info = FALSE
+), rownames = FALSE)
+
+
+```
+
+##row3{data-height=350}
+-----------------------------------
+### <span style="font-size: 80%;"> HSA4- </span> Alimentación SALUDABLE (Puntuación) según PRACTICA de AF
+
+```{r}
+dataTableOutput("combined_stats_wide")
+```
+
+### <span style="font-size: 80%;"> HSA 4,5,6- </span> OTROS RESULTADOS
+<div class="resume-box">
+```{r}
+output$porcentajeCocinar<-renderText({
+  porcentajeCocinar<-get_frequencies(HSA_filtered_dataset,"TiempoCocinarHSA")[1,2]
+  porcentajeCocinar<-paste("Entre las mujeres de las características seleccionadas un", porcentajeCocinar,"%", sep=" ")
+  porcentajeCocinar<-paste(porcentajeCocinar, " opina que su alimentación sería más saludable en caso de disponer de más tiempo para cocinar", sep=" ")
+})
+htmlOutput("porcentajeCocinar")
+```
+ </div>
+<div class="resume-box">
+```{r}
+htmlOutput("porcentajeVegana")
+```
+ </div> 
+<div class="resume-box">
+```{r}
+htmlOutput("mediaSedentario")
+```
+ </div>
+<div class="resume-box">
+```{r}
+htmlOutput("mediaOcio")
+```
+ </div>
+
+
+
+```{r}
+output$porcentajeVegana<-renderText({
+  porcentajeVegana<-get_frequencies(HSA_filtered_dataset,"VegetarianaHSA")[1,2]
+  porcentajeVegana<-paste("En las mujeres de características seleccionadas un", porcentajeVegana,"%",sep=" ")
+  porcentajeCocinar<-paste(porcentajeVegana, "son vegetarianas o veganas", sep=" ")
+})
+output$mediaSedentario<-renderText({
+  porcentaje<-get_frequencies(HSA_filtered_dataset,"TiempoSedentarioHSA")$Porcentaje
+  porcentaje<- as.numeric(gsub("%", "", porcentaje))
+  marcas<-c(3,5,1)
+  mediaSedentario<-round(sum(marcas*porcentaje)/100,2)
+  mediaSedentario<-paste("El tiempo sedentario medio (aproximado) entre las mujeres de las características seleccionadas es de ",mediaSedentario,sep=" ")
+  mediaSedentario<-paste(mediaSedentario,"horas diarias", sep=" ")
+})
+output$mediaOcio<-renderText({
+  porcentaje<-get_frequencies(HSA_filtered_dataset,"TiempoOcioFL")$Porcentaje
+  porcentaje<- as.numeric(gsub("%", "", porcentaje))
+  marcas<-c(2,6,8)
+  mediaOcio<-round(sum(marcas*porcentaje)/100,2)
+  mediaOcio<-paste("El tiempo medio de ocio entre las mujeres de las características seleccionadas es de ",mediaOcio,sep=" ")
+  mediaOcio<-paste(mediaOcio,"horas semanales", sep=" ")
+})
+```
+
+Tablas {data-navmenu="Hábitos Saludables" data-orientation=rows}
+=========================================
+#row1
+-------------------------------------
+
+```{r}
+output$tb_alcohol_af<-renderUI({
+  dataset<-HSA_filtered_dataset()
+  dataset<-dataset %>%
+  filter(!is.na(PracticaAF_cat)& ! is.na(AlcoholHSA))
+  if (nrow(dataset) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+  variates<-subset(dataset,select=c("AlcoholHSA","PracticaAF_cat"))
+  tb_alcohol_af<-sjt.xtab(variates$AlcoholHSA,variates$PracticaAF_cat,show.col.prc = TRUE,show.summary = FALSE)
+  return(HTML(tb_alcohol_af$knitr))
+})
+
+```
+### CONSUMO DE ALCOHOL según Práctica AF
+```{r}
+uiOutput("tb_alcohol_af")
+```
+
+```{r}
+output$tb_tabaco_af<-renderUI({
+  dataset<-HSA_filtered_dataset()
+  dataset<-dataset %>%
+  filter(!is.na(PracticaAF_cat)& ! is.na(TabacoHSA_cat))
+  if (nrow(dataset) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+  variates<-subset(dataset,select=c("TabacoHSA_cat","PracticaAF_cat"))
+  tb_tabaco_af<-sjt.xtab(variates$TabacoHSA_cat,variates$PracticaAF_cat,show.col.prc = TRUE,show.summary = FALSE)
+  return(HTML(tb_tabaco_af$knitr))
+})
+
+```
+###  HABITO DE TABACO según Práctica AF
+```{r}
+uiOutput("tb_tabaco_af")
+```
+
+```{r}
+output$tb_estres_af<-renderUI({
+  dataset<-HSA_filtered_dataset()
+  dataset<-dataset %>%
+  filter(!is.na(PracticaAF_cat)& ! is.na(EstresHSA))
+  if (nrow(dataset) == 0) {
+    return(data.frame(Mensaje = "No hay datos disponibles para las categorías seleccionadas."))
+  }
+  variates<-subset(dataset,select=c("EstresHSA","PracticaAF_cat"))
+  tb_estres_af<-sjt.xtab(variates$EstresHSA,variates$PracticaAF_cat,show.col.prc = TRUE,show.summary = FALSE)
+  return(HTML(tb_estres_af$knitr))
+})
+
+```
+
+
+##row2
+--------------------------------------
+
+```{r}
+output$tb_sedentario_af<-renderUI({
+  dataset<-HSA_filtered_dataset()
+  dataset<-dataset %>%
+  filter(!is.na(PracticaAF_cat)& ! is.na(TiempoSedentarioHSA))
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+  variates<-subset(dataset,select=c("TiempoSedentarioHSA","PracticaAF_cat"))
+  tb_sedentario_af<-sjt.xtab(variates$TiempoSedentarioHSA,variates$PracticaAF_cat,show.col.prc = TRUE,show.summary = FALSE)
+  return(HTML(tb_sedentario_af$knitr))
+})
+
+```
+### ESTRES según Práctica AF
+```{r}
+uiOutput("tb_estres_af")
+```
+
+### TIEMPO SEDENTARIO según Práctica AF
+```{r}
+uiOutput("tb_sedentario_af")
+```
+
+
+Variables físico-ginecológicas{data-orientation=rows} 
+==========================================
+
+
+```{r}
+# Reactive AF_dataset
+
+AFGC_filtered_dataset<-reactive({filtered_data(AFGC_dataset)})
+```
+
+
+```{r}
+output$imc_histogram_faceted_ui<-renderUI({
+  dataset <- AFGC_filtered_dataset()
+  dataset <- dataset %>%
+    filter(!is.na(EstaturaAFGC) & !is.na(PesoAFGC))
+  if(length(dataset)==0){
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+  else{
+    plotlyOutput("imc_histogram_faceted_render")
+  }
+})
+
+
+output$imc_histogram_faceted_render <- renderPlotly({
+ 
+  AFGC_dataset <- AFGC_filtered_dataset()
+  
+  AFGC_dataset <- AFGC_dataset %>%
+    filter(!is.na(EstaturaAFGC) & !is.na(PesoAFGC))
+  
+  AFGC_dataset$IMC <- AFGC_dataset$PesoAFGC / (AFGC_dataset$EstaturaAFGC / 100)^2
+  
+  AFGC_dataset$IMC_cat <- cut(AFGC_dataset$IMC,
+                              breaks = c(-Inf, 18.5, 24.9, 29.9, Inf),
+                              labels = c("Peso insuficiente", "Peso normal", "Sobrepeso", "Obesidad"),right = FALSE)
+  
+  AFGC_dataset <-AFGC_dataset %>%
+  mutate(PracticaAF_cat = recode_factor(PracticaAF_cat,"Sí" = "Práctica AF", "No" = "No Práctica AF"))
+  
+  imc_histogram_faceted <- ggplot(AFGC_dataset, aes(x = IMC, fill = IMC_cat, y = after_stat(density))) +
+    geom_histogram(binwidth = 5, color = "gray", alpha = 0.9) +
+    scale_fill_viridis_d(option = "D") +  
+    labs(x = "Índice de Masa Corporal (IMC)", y = " ", title = "") +
+    facet_wrap(~ PracticaAF_cat, scales = "free_y") + 
+    theme_bw() +
+   theme(legend.position="top",legend.title = element_text(size = 10),
+        legend.text = element_text(size = 8))  
+  ggplotly(imc_histogram_faceted)
+})
+
+```
+
+
+## row1{data-height=500}
+---------------------------------------------------
+
+### <span style="font-size: 80%;"> AFGC1,2- </span>Distribución del IMC según Práctica AF 
+
+```{r}
+uiOutput("imc_histogram_faceted_ui")
+
+```
+
+### <span style="font-size: 80%;"> AFGC3,4,5- </span>Edad PRIMER EMBARAZO, Nº EMBARAZOS y VIDA FÉRTIL
+
+```{r}
+
+output$edad_embarazos_ui<-renderUI({
+  dataset <- AFGC_filtered_dataset()
+  dataset <- dataset %>%
+    filter(!is.na(PrimerEmbarazoAFGC) & !is.na(NumEmbarazosAFGC) & !is.na(PrimeraMenstruacionAFGC) & !is.na(EdadMenopausiaAFGC))
+  if(length(dataset)==0){
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+  else{
+    plotlyOutput("edad_embarazos_render")
+  }
+})
+output$edad_embarazos_render<-renderPlotly({
+  dataset<-AFGC_filtered_dataset()
+  dataset<-dataset %>%
+  filter(!is.na(PrimerEmbarazoAFGC)& ! is.na(NumEmbarazosAFGC))
+  breaks <- c(16, 25, 35, 40, 45, Inf)
+  labels <- c("[16-25]", "[26-35]", "[36-40]", "[41-45]", ">46")
+  dataset$`Edad primer embarazo` <- cut(dataset$PrimerEmbarazoAFGC, breaks = breaks, labels = labels, include.lowest = TRUE)
+  dataset <- dataset %>%
+    filter(!is.na(PrimeraMenstruacionAFGC) & !is.na(EdadMenopausiaAFGC))
+
+  dataset$VidaFertil <- ifelse(dataset$PrimeraMenstruacionAFGC <= 11 & dataset$EdadMenopausiaAFGC == "Después de los 50 años",                                  "Larga", "Normal")
+
+  diag_plot_edad <- ggplot(data = dataset, aes(x = `Edad primer embarazo`, fill = VidaFertil)) +
+  geom_bar(bins = 10, show.legend = FALSE) +  
+  scale_fill_manual(values = paleta_viridis_laura) +
+  theme_minimal() +
+  labs(x = "Edad primer embarazo", y = "Count")
+
+  boxplot_plot <- ggplot(data = dataset, aes(x = `Edad primer embarazo`, y = NumEmbarazosAFGC, fill = VidaFertil)) +
+  geom_boxplot(show.legend = FALSE) + geom_jitter(aes(x = `Edad primer embarazo`, y = NumEmbarazosAFGC), 
+              size = 2,
+              alpha = 0.1,
+              width = 0.1)+ 
+  scale_fill_manual(values = paleta_viridis_laura) +
+  theme_minimal()+ labs(x = "Edad primer embarazo", y = "Nº de embarazos") 
+
+  plot1 <- ggplotly(diag_plot_edad)
+  plot2 <- ggplotly(boxplot_plot)
+  edad_embarazos<-subplot(plot1, plot2, nrows = 1)
+  return(edad_embarazos)
+})
+```
+
+```{r}
+uiOutput("edad_embarazos_ui")
+```
+
+
+## row2{data-height=380}
+------------------------------------------------------------
+### Distribución del IMC según la Práctica de AF 
+
+```{r}
+AFGC_dataset <- AFGC_dataset %>%
+    filter(!is.na(PracticaAF_cat) & !is.na(PesoAFGC) & !is.na(EstaturaAFGC))
+   if(length(AFGC_dataset)==0){
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+   }
+  AFGC_dataset$EstaturaAFGC<-as.numeric(AFGC_dataset$EstaturaAFGC)
+  AFGC_dataset$PesoAFGC<-as.numeric(AFGC_dataset$PesoAFGC)
+  AFGC_dataset$IMC <- AFGC_dataset$PesoAFGC / (AFGC_dataset$EstaturaAFGC / 100)^2
+  
+  AFGC_dataset$IMC_cat <- cut(AFGC_dataset$IMC,
+                              breaks = c(-Inf, 18.5, 24.9, 29.9, Inf),
+                              labels = c("Peso insuficiente", "Peso normal", "Sobrepeso", "Obesidad"), right = FALSE)
+  AFGC_dataset <- AFGC_dataset %>%
+    mutate(PracticaAF_cat = recode_factor(PracticaAF_cat, "Sí" = "Práctica AF", "No" = "No Práctica AF"))
+output$tb_imc_af<-renderUI({
+  dataset<-AFGC_filtered_dataset()
+  imc_variate<-subset(dataset,select=c("IMC_cat","PracticaAF_cat"))
+  tb_imc_af<-sjt.xtab(imc_variate$IMC_cat,imc_variate$PracticaAF_cat,show.col.prc = TRUE,show.summary = FALSE, CSS = list(css.table = "border: 1px solid #ddd;",
+             css.thead = "background-color: #333; color: white;",
+             css.cell = "padding: 8px; background-color: #4187dd;",
+             css.cell.content = "font-size: 11pt; color: white;"))
+  return(HTML(tb_imc_af$knitr))
+})
+
+```
+
+```{r}
+uiOutput("tb_imc_af")
+```
+
+
+### Distribución el Nº de Embarazos según VidaFertil
+
+```{r}
+output$tb_numemb_vidafertil<-renderUI({
+  dataset<-AFGC_filtered_dataset()
+  dataset<-dataset %>%
+  filter(!is.na(PrimerEmbarazoAFGC)& ! is.na(NumEmbarazosAFGC))
+  if(length(dataset)==0){
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+  breaks <- c(16, 25, 35, 40, 45, Inf)
+  labels <- c("[16-25]", "[26-35]", "[36-40]", "[41-45]", ">46")
+  dataset$EdadPrimerEmbarazo <- cut(dataset$PrimerEmbarazoAFGC, breaks = breaks, labels = labels, include.lowest = TRUE)
+  gine_variates<-gine_variates<-subset(dataset,select=c("EdadPrimerEmbarazo","NumEmbarazosAFGC","VidaFertilAFGC"))
+  gine_variates$EdadPrimerEmbarazo <- factor(gine_variates$EdadPrimerEmbarazo)
+  tb_numemb_vidafertil<-sjt.xtab(gine_variates$NumEmbarazosAFGC,gine_variates$VidaFertilAFGC,show.col.prc = TRUE,show.summary = FALSE, CSS = list(css.table = "border: 1px solid #ddd;",
+             css.thead = "background-color: #333; color: white;",
+             css.cell = "padding: 8px; background-color: #4187dd;",
+             css.cell.content = "font-size: 11pt; color: white;"))
+  return(HTML(tb_numemb_vidafertil$knitr))
+})
+
+```
+
+```{r}
+uiOutput("tb_numemb_vidafertil")
+```
+
+#row3
+-----------------------------------------
+
+### Estadísticas Variables Ginecológicas
+
+```{r}
+output$tb_ginec<-renderTable({
+  dataset<-AFGC_filtered_dataset()
+  gine_variates<-subset(dataset,select=c("PrimerEmbarazoAFGC","NumEmbarazosAFGC","VidaFertilAFGC"))
+  colnames(gine_variates)<-c("EdadPrimerEmbarazo","Nºde Embrazos","VidaFertil")
+  tb_ginec<-dfSummary(gine_variates, headings=FALSE, graph.col = FALSE)
+  tb_ginec<-data.frame(tb_ginec)
+  tb_ginec<-tb_ginec[,-1]
+  colnames(tb_ginec)<-c("Variable","Estadísticos","Frecuencias", "Válidos", "Faltantes")
+  tb_ginec
+})
+```
+
+```{r}
+tableOutput("tb_ginec")
+```
+
+
+Visualización univariante {data-navmenu="Cáncer de mama"}
+=======================================================
+
+##column1{data-width=310}
+-----------------------------------------
+
+```{r}
+AFBC_filtered_dataset <- reactive({
+  filtered_data(AFBC_dataset)
+})
+
+```
+
+
+```{r}
+output$gauge_plot_bc_ui <- renderUI({
+  dataset <- AFBC_filtered_dataset()
+  dataset <- dataset %>%
+    filter(!is.na(CancerMamaAFGC))
+  
+  if (nrow(dataset) == 0 || sum(dataset$CancerMamaAFGC == "Sí") == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  } else {
+    gaugeOutput("gauge_plot_bc_render")
+  }
+})
+output$gauge_plot_bc_render <- renderGauge({
+  dataset <- AFBC_filtered_dataset()
+  dataset <- dataset %>%
+    filter(!is.na(CancerMamaAFGC))
+  if (nrow(dataset) > 0) {
+    rate <- table(dataset$CancerMamaAFGC)
+    relative_rate <- prop.table(rate)
+    rate <- as.numeric(relative_rate["Sí"] * 100)
+    gauge(rate, min = 0, max = 100, symbol = '%', gaugeSectors(
+      success = c(80, 100), warning = c(40, 79), danger = c(0, 39)
+    ))
+  }
+})
+
+```
+###  <span style="font-size: 80%;"> AFGC8- </span> Prevalencia del CANCER DE MAMA
+```{r}
+uiOutput("gauge_plot_bc_ui")
+```
+
+### <span style="font-size: 80%;"> AFGC7- </span> Con ANTECEDENTES de Cáncer
+
+```{r}
+output$gauge_plot_ant_ui <- renderUI({
+  dataset <- AFBC_filtered_dataset()
+  dataset <- dataset %>%
+    filter(!is.na(CancerMamaAFGC) & !is.na(AntecedentesAFGC))
+  
+  if (nrow(dataset) == 0 || sum(dataset$AntecedentesAFGC == "Sí") == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  } else {
+    gaugeOutput("gauge_plot_ant_render")
+  }
+})
+
+output$gauge_plot_ant_render <- renderGauge({
+  dataset <- AFBC_filtered_dataset()
+  dataset <- dataset %>%
+    filter(!is.na(CancerMamaAFGC) & !is.na(AntecedentesAFGC))
+  
+  if (nrow(dataset) > 0) {
+    rate <- table(dataset$AntecedentesAFGC)
+    relative_rate <- prop.table(rate)
+    rate <- as.numeric(relative_rate["Sí"] * 100)
+    
+    gauge(rate, min = 0, max = 100, symbol = '%', gaugeSectors(
+      success = c(80, 100), warning = c(40, 79), danger = c(0, 39)
+    ))
+  }
+})
+
+```
+
+```{r}
+uiOutput("gauge_plot_ant_ui")
+```
+
+### <span style="font-size: 80%;"> AFGC10- </span> PRESCRIPCIÓN de AF tras el diagnóstico
+
+```{r}
+output$gauge_plot_bc_presc_ui <- renderUI({
+  dataset <- AFBC_filtered_dataset()
+  dataset <- dataset %>%
+    filter(!is.na(CancerMamaAFGC) & !is.na(PrescripcionAFGC))
+  
+  if (nrow(dataset) == 0 || sum(dataset$PrescripcionAFGC == "Sí") == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  } else {
+    gaugeOutput("gauge_plot_bc_presc_render")
+  }
+})
+
+output$gauge_plot_bc_presc_render <- renderGauge({
+  dataset <- AFBC_filtered_dataset()
+  dataset <- dataset %>%
+    filter(!is.na(CancerMamaAFGC) & !is.na(PrescripcionAFGC))
+  
+  if (nrow(dataset) > 0) {
+    rate <- table(dataset$PrescripcionAFGC)
+    relative_rate <- prop.table(rate)
+    rate <- as.numeric(relative_rate["Sí"] * 100)
+    
+    gauge(rate, min = 0, max = 100, symbol = '%', gaugeSectors(
+      success = c(80, 100), warning = c(40, 79), danger = c(0, 39)
+    ))
+  }
+})
+
+```
+
+```{r}
+uiOutput("gauge_plot_bc_presc_ui")
+```
+
+##column2
+-------------------------------------------------------
+
+```{r}
+output$pie_chart_bctypes_ui <- renderUI({
+    data <- get_frequencies(AFBC_filtered_dataset, "TipoCancerAFGC")
+    
+    if (nrow(data) == 0) {
+      return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+    } else {
+      plotlyOutput("pie_chart_bctypes_render")
+    }
+  })
+
+
+output$pie_chart_bctypes_render <- renderPlotly({
+  data <- get_frequencies(AFBC_filtered_dataset,"TipoCancerAFGC")
+  data$Porcentaje <- as.numeric(gsub("%", "", data$Porcentaje))
+  
+  plot_ly(data, labels = ~Modalidad, values = ~Porcentaje, type = "pie", hole = 0.5,
+          marker = list(colors = paleta_viridis_laura)) %>%
+    layout(title = "",
+           legend = list(orientation = "v", x = 1.1, y = 0.5, xanchor = 'left'),
+           xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+           yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE))
+})
+
+
+```
+### <span style="font-size: 80%;"> AFGC9- </span>TIPOLOGÍA del cáncer de mama
+
+```{r}
+uiOutput("pie_chart_bctypes_ui")
+```
+
+```{r}
+output$treemap_trat_ui <- renderUI({
+  frequencies <- get_frequencies(AFBC_filtered_dataset, "TratamientoAFGC")
+  
+  if (nrow(frequencies) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  } else {
+    plotlyOutput("treemap_trat_render")
+  }
+})
+
+
+output$treemap_trat_render <- renderPlotly({
+  data <- get_frequencies(AFBC_filtered_dataset, "TratamientoAFGC")
+  
+  plot_ly(data, 
+          type = "treemap", 
+          labels = ~Modalidad, 
+          parents = ~"", 
+          values = ~as.numeric(gsub("%", "", Porcentaje)), 
+          hoverinfo = "label+value+percent root",
+           marker = list(colors = paleta_viridis_laura),
+          hovertemplate = paste("<b>%{label}</b><br>",
+                                "Porcentaje: %{percentRoot:.2f}%<br>",
+                                "Valor: %{value}")) %>%
+    layout(treemap = list(textposition = "middle center"))
+})
+
+
+```
+
+### <span style="font-size: 80%;"> AFGC10- </span> TRATAMIENTOS administrados
+```{r}
+uiOutput("treemap_trat_ui")
+```
+
+
+```{r}
+output$barchar_af_trat_ui <- renderUI({
+    data <- get_frequencies(AFBC_filtered_dataset, "AFTratamientoAFGC")
+    
+    if (nrow(data) == 0) {
+      return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+    } else {
+      plotlyOutput("barchar_af_trat_render")
+    }
+  })
+
+output$barchar_af_trat_render <- renderPlotly({
+  data <- get_frequencies(AFBC_filtered_dataset,"AFTratamientoAFGC")
+  plot_ly(data, 
+          x = ~Porcentaje, 
+          y = ~Modalidad, 
+          type = "bar", 
+          orientation = 'h', 
+          marker = list(color = paleta_viridis_laura), 
+          textposition = 'none') %>%
+    layout(title = "",  
+           xaxis = list(title = "", showticklabels = FALSE),  
+           yaxis = list(title = "", showticklabels = TRUE),  
+           showlegend = FALSE)
+})
+
+
+```
+##column3
+------------------------------
+### <span style="font-size: 80%;"> AFGC12- </span>Práctica AF DURANTE Tratamientos
+
+```{r}
+uiOutput("barchar_af_trat_ui")
+```
+
+```{r}
+
+output$barchar_af_postrat_ui <- renderUI({
+    data <- get_frequencies(AFBC_filtered_dataset, "AFPostAFGC")
+    
+    if (nrow(data) == 0) {
+      return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+    } else {
+      plotlyOutput("barchar_af_postrat_render")
+    }
+  })
+
+output$barchar_af_postrat_render <- renderPlotly({
+  data <- get_frequencies(AFBC_filtered_dataset,"AFPostAFGC")
+  plot_ly(data, 
+          x = ~Porcentaje, 
+          y = ~Modalidad, 
+          type = "bar", 
+          orientation = 'h', 
+          marker = list(color = paleta_viridis_laura), 
+          textposition = 'none') %>%
+    layout(title = "",  
+           xaxis = list(title = "", showticklabels = FALSE),  
+           yaxis = list(title = "", showticklabels = TRUE),  
+           showlegend = FALSE)
+})
+
+
+```
+
+### <span style="font-size: 80%;"> AFGC13- </span> Práctica AF POSTERIOR Tratamientos
+
+```{r}
+uiOutput("barchar_af_postrat_ui")
+```
+
+Asociaciones Visualización {data-navmenu="Cáncer de mama"}
+========================================
+
+##column1{data-width=350}
+---------------------------------------------------------
+
+```{r}
+AFBC_filtered_dataset <- reactive({
+  filtered_data(AFBC_dataset)
+})
+```
+
+```{r}
+
+output$bc_af_plot_ui <- renderUI({
+    datos_porcentaje<-get_conditional_frequencies(AFBC_filtered_dataset,"CancerMamaAFGC","PracticaAF_cat")
+   if (nrow(datos_porcentaje) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  } else {
+    plotlyOutput("bc_af_plot_render")
+  }
+})
+
+output$bc_af_plot_render <- renderPlotly({
+  datos_porcentaje<-get_conditional_frequencies(AFBC_filtered_dataset,"CancerMamaAFGC","PracticaAF_cat")
+   bc_af_plot <- ggplot(datos_porcentaje, aes(x = PracticaAF_cat, y = Porcentaje, fill = CancerMamaAFGC)) +
+    geom_bar(stat = "identity", position = "stack") +
+    labs(x = "Practica de Actividad Física", y = "% en la categoría", fill = "Cancer de Mama ") +
+    scale_fill_manual(values = paleta_viridis_laura)+ 
+    theme_stata() + theme(legend.position = "top", legend.text = element_text(size = 8), axis.text.y = element_blank(), 
+          axis.ticks.y = element_blank())
+  return(plotly::ggplotly(bc_af_plot))
+})
+
+```
+### Prevalencia del CÁNCER DE MAMA según PRACTICA de AF
+```{r}
+uiOutput("bc_af_plot_ui")
+```
+
+
+```{r}
+AFGBC_filtered_dataset <- reactive({
+  filtered_data(AFGBC_dataset)
+})
+```
+
+
+
+```{r}
+
+output$bc_antec_plot_ui <- renderUI({
+   datos_porcentaje<-get_conditional_frequencies(AFGBC_filtered_dataset,"CancerMamaAFGC","AntecedentesAFGC")
+   if (nrow(datos_porcentaje) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  } else {
+    plotlyOutput("bc_antec_plot_render")
+  }
+})
+
+
+output$bc_antec_plot_render <- renderPlotly({
+  datos_porcentaje<-get_conditional_frequencies(AFGBC_filtered_dataset,"CancerMamaAFGC","AntecedentesAFGC")
+   bc_antec_plot <- ggplot(datos_porcentaje, aes(x = AntecedentesAFGC, y = Porcentaje, fill = CancerMamaAFGC)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    labs(x = "Antecedentes", y = "% en la categoría", fill = "Cancer de Mama ") +
+    scale_fill_viridis_d() + 
+    theme_stata() + theme(legend.position = "top", legend.text = element_text(size = 8), axis.text.y = element_blank(),  # Hides the y-axis text
+          axis.ticks.y = element_blank())
+  return(plotly::ggplotly(bc_antec_plot))
+})
+
+
+```
+
+
+### Prevalencia del CANCER DE MAMA según ANTECEDENTES
+
+```{r}
+uiOutput("bc_antec_plot_ui")
+```
+
+
+
+```{r}
+library(dplyr)
+
+output$ggpairs_gine_plot_ui <- renderUI({
+  dataset <- AFGBC_filtered_dataset()
+  dataset <- dataset[complete.cases(dataset[, c("NumEmbarazosAFGC", "PrimerEmbarazoAFGC", "VidaFertilAFGC", "CancerMamaAFGC")]), ]
+  dataset <- subset(dataset, select = c("NumEmbarazosAFGC", "PrimerEmbarazoAFGC", "VidaFertilAFGC", "CancerMamaAFGC"))
+  
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  } else {
+    plotlyOutput("ggpairs_gine_plot_render")
+  }
+})
+
+
+output$ggpairs_gine_plot_render <- renderPlotly({
+  dataset <- AFGBC_filtered_dataset()
+  dataset <- dataset[complete.cases(dataset[, c("NumEmbarazosAFGC", "PrimerEmbarazoAFGC", "VidaFertilAFGC", "CancerMamaAFGC")]), ]
+  dataset<-subset(dataset,select=c("NumEmbarazosAFGC","PrimerEmbarazoAFGC","VidaFertilAFGC","CancerMamaAFGC"))
+  colnames(dataset) <- c("NumEmbarazos", "EdadPrimerEmbarazo", "VidaFertil", "CancerMama")
+  dataset$CancerMama <- factor(dataset$CancerMama)
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  }
+ ggpairs_gine_plot <- ggpairs(dataset, 
+                          columns = c("NumEmbarazos", "EdadPrimerEmbarazo","VidaFertil"),
+                          aes(color = CancerMama))+ 
+    scale_fill_manual(values = paleta_viridis_laura) + 
+    theme(axis.text.x = element_text(angle = 45,size=8, hjust = 1))+ theme_stata()
+  
+  ggplotly(ggpairs_gine_plot)
+})
+
+```
+
+
+##column2
+--------------------------------------
+
+### Prevalencia del CÁNCER DE MAMA según  GINECOLOGÍA
+
+```{r}
+uiOutput("ggpairs_gine_plot_ui")
+```
+
+
+
+```{r}
+
+output$bc_hsa_plot_ui <- renderUI({
+   datos_porcentaje<-get_conditional_frequencies(AFBC_filtered_dataset,"CancerMamaAFGC","EstiloDeVida")
+   if (nrow(datos_porcentaje) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorías seleccionadas.</p>"))
+  } else {
+    plotlyOutput("bc_hsa_plot_render")
+  }
+})
+output$bc_hsa_plot_render <- renderPlotly({
+  datos_porcentaje<-get_conditional_frequencies(AFBC_filtered_dataset,"CancerMamaAFGC","EstiloDeVida")
+   bc_hsa_plot <- ggplot(datos_porcentaje, aes(x = Porcentaje, y = EstiloDeVida , fill = CancerMamaAFGC)) +
+    geom_bar(stat = "identity", position = "dodge") +
+    labs(x = "Porcentaje en la categoría", y = "Estilo de Vjida", fill = "Cancer de Mama ") +
+    scale_fill_manual(values = paleta_viridis_laura)+ 
+    theme_stata() + theme(legend.position = "top", legend.text = element_text(size = 8), axis.text.x = element_blank(), 
+          axis.ticks.y = element_blank())
+  return(plotly::ggplotly(bc_hsa_plot))
+})
+
+```
+### Prevalencia del CÁNCER DE MAMA según ESTILO DE VIDA
+```{r}
+uiOutput("bc_hsa_plot_ui")
+```
+
+
+Contrastes de Asociación {data-navmenu="Cáncer de mama"}
+========================================
+
+##column1
+-------------------------------------------------------
+### Test de asociación CANCER DE MAMA-ANTECEDENTES
+
+```{r include= FALSE}
+AFGBC_dataset<-AFGBC_dataset%>%
+  mutate(AntecedentesAFGC_cat = case_when(
+    AntecedentesAFGC == "No estoy segura" ~ NA_character_,
+    AntecedentesAFGC == "Sí" ~ "Sí",
+    AntecedentesAFGC == "No" ~ "No",
+  ))
+
+output$tb_bc_antec<-renderUI({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(AntecedentesAFGC_cat))
+  data<-subset(dataset,select=c("CancerMamaAFGC","AntecedentesAFGC_cat"))
+  tb_bc_antec<-sjt.xtab(data$AntecedentesAFGC_cat,data$CancerMamaAFGC,show.col.prc = TRUE,show.summary = FALSE)
+  return(HTML(tb_bc_antec$knitr))
+})
+
+output$test_result<-renderPrint({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(AntecedentesAFGC_cat))
+  tab_prevalence <- table(AFGBC_dataset$CancerMamaAFGC,  AFGBC_dataset$AntecedentesAFGC_cat)
+  test_result<-chisq.test(tab_prevalence)
+  print(test_result)
+})
+
+
+output$decision_result <- renderPrint({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(AntecedentesAFGC_cat))
+  tab_prevalence <- table(AFGBC_dataset$CancerMamaAFGC,  AFGBC_dataset$AntecedentesAFGC_cat)
+  test<-chisq.test(tab_prevalence)
+  p_value<-test$p.value
+  decision <- ifelse(p_value < 0.05, "Rechazar", "Aceptar")
+  indep <- ifelse(decision == "Aceptar", "Independencia", "Dependencia")
+  decision_result<-paste("La decisión es:", decision, "la hipótesis de igualdad de porcentajes y por tanto la", indep," entre las variables")
+    print(decision_result)
+  })
+
+
+output$test_result_or<-renderTable({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(AntecedentesAFGC_cat))
+  tab_prevalence <- table(dataset$CancerMamaAFGC,   dataset$AntecedentesAFGC_cat)
+  test_result_or<-epi.2by2(tab_prevalence,"case.control")$massoc.summary[1, , drop = FALSE]
+  return(test_result_or)
+})
+
+``` 
+
+
+```{r}
+fluidPage(
+  div(class = "container",
+      div(class = "row spaced-row",
+           uiOutput("tb_bc_antec")), withMathJax(
+      HTML("H<sub>0</sub>: \\( p(\\text{Cáncer} \\mid \\text{Antecedentes}) = p(\\text{Cáncer} \\mid \\text{No Antecedentes}) \\)")),
+      div(class="row spaced-row",
+      uiOutput("test_result")), div(class="row spaced-row", style = "color:#5353f3;font-size: 13pt",
+      uiOutput("decision_result") ),  div(class="row spaced-row",tableOutput("test_result_or")
+    )))
+```
+
+
+### Test de asociación CANCER DE MAMA-PROTECCION GINECOLÓGICA
+
+```{r include= FALSE}
+
+output$tb_bc_pg<-renderUI({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(ProteccionGinecologica))
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles en las categorias seleccionadas</p>"))
+  }
+  data<-subset(dataset,select=c("CancerMamaAFGC","ProteccionGinecologica"))
+  tb_bc_pg<-sjt.xtab(data$ProteccionGinecologica,data$CancerMamaAFGC,show.col.prc = TRUE,show.summary = FALSE)
+  return(HTML(tb_bc_pg$knitr))
+})
+
+output$test_result_pg<-renderPrint({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(ProteccionGinecologica))
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorias seleccionadas</p>"))
+  }
+  tab_prevalence <- table(dataset$CancerMamaAFGC,  dataset$ProteccionGinecologica)
+  test_result_pg<-chisq.test(tab_prevalence)
+  print(test_result_pg)
+})
+
+
+output$decision_result_pg <- renderPrint({
+  dataset<-AFGBC_filtered_dataset() %>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(ProteccionGinecologica))
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorias seleccionadas</p>"))
+  }
+  tab_prevalence <- table(dataset$CancerMamaAFGC,  dataset$ProteccionGinecologica)
+  test<-chisq.test(tab_prevalence)
+  p_value<-test$p.value
+  decision <- ifelse(p_value < 0.05, "Rechazar", "Aceptar")
+  indep <- ifelse(decision == "Aceptar", "Independencia", "Dependencia")
+  decision_result_pg<-paste("La decisión es:", decision, "la hipótesis de igualdad de porcentajes y por tanto la", indep," entre las variables")
+    print(decision_result_pg)
+  })
+
+output$test_result_pg_or<-renderTable({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)&!is.na(ProteccionGinecologica))
+  tab_prevalence <- table(dataset$CancerMamaAFGC, dataset$ProteccionGinecologica)
+  test_result_pg_or<-epi.2by2(tab_prevalence,"case.control")$massoc.summary[1, , drop = FALSE]
+  return(test_result_pg_or)
+})
+
+``` 
+
+
+
+
+```{r}
+fluidPage(
+  div(class = "container",
+      div(class = "row spaced-row",
+           uiOutput("tb_bc_pg")), withMathJax(
+      HTML("H<sub>0</sub>: \\( p(\\text{Cáncer} \\mid \\text{Sin Protec. Ginec.}) = p(\\text{Cáncer} \\mid \\text{Con Protec. Ginec.}) \\)")),
+      div(class="row spaced-row",
+      uiOutput("test_result_pg")),  div(class="row spaced-row", style = "color:#5353f3;font-size: 13pt",
+      uiOutput("decision_result_pg")), div(class="row spaced-row", tableOutput("test_result_pg_or"))
+    ))
+```
+
+
+
+#column2
+---------------------------------
+
+### Test de asociación CANCER DE MAMA y PRACTICA DE AF
+
+```{r include= FALSE}
+
+output$tb_bc_af<-renderUI({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(PracticaAF_cat))
+  data<-subset(dataset,select=c("CancerMamaAFGC","PracticaAF_cat"))
+  tb_bc_af<-sjt.xtab(data$PracticaAF_cat,data$CancerMamaAFGC,show.col.prc = TRUE,show.summary = FALSE)
+  return(HTML(tb_bc_af$knitr))
+})
+
+output$test_result_af<-renderPrint({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(PracticaAF_cat))
+  
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorias seleccionadas</p>"))
+  }
+  
+  tab_prevalence <- table(dataset$CancerMamaAFGC, dataset$PracticaAF_cat)
+  test_result_af<-chisq.test(tab_prevalence)
+  print(test_result_af)
+})
+
+
+output$decision_result_af <- renderPrint({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(PracticaAF_cat))
+  
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para mostrar.</p>"))
+  }
+  
+  tab_prevalence <- table(dataset$CancerMamaAFGC,  dataset$PracticaAF_cat)
+  test<-chisq.test(tab_prevalence)
+  p_value<-test$p.value
+  decision <- ifelse(p_value < 0.05, "Rechazar", "Aceptar")
+  indep <- ifelse(decision == "Aceptar", "Independencia", "Dependencia")
+  decision_result_af<-paste("La decisión es:", decision, "la hipótesis de igualdad de porcentajes y por tanto la", indep," entre las variables")
+    print(decision_result_af)
+  })
+
+output$test_result_af_or<-renderTable({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(PracticaAF_cat))
+  tab_prevalence <- table(dataset$CancerMamaAFGC,   dataset$PracticaAF_cat)
+  test_result_af_or<-epi.2by2(tab_prevalence,"case.control")$massoc.summary[1, , drop = FALSE]
+  return(test_result_af_or)
+})
+
+``` 
+
+
+
+
+```{r}
+fluidPage(
+  div(class = "container",
+      div(class = "row spaced-row", uiOutput("tb_bc_af")), withMathJax(
+      HTML("H<sub>0</sub>: \\( p(\\text{Cáncer} \\mid \\text{PracticaAF}) = p(\\text{Cáncer} \\mid \\text{No Practica AF}) \\)")),
+      div(class="row spaced-row",
+      uiOutput("test_result_af")),   div(class="row spaced-row", style = "color: #5353f3;font-size: 13pt",
+      uiOutput("decision_result_af")), div(class="row spaced-row", tableOutput("test_result_af_or") )
+    ))
+```
+
+
+
+
+### Test de asociación CANCER DE MAMA-ESTILO DE VIDA
+
+```{r include= FALSE}
+
+output$tb_bc_ls<-renderUI({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(EstiloDeVida))
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorias seleccionadas</p>"))
+  }
+  data<-subset(dataset,select=c("CancerMamaAFGC","EstiloDeVida"))
+  tb_bc_ls<-sjt.xtab(data$EstiloDeVida,data$CancerMamaAFGC,show.col.prc = TRUE,show.summary = FALSE)
+  return(HTML(tb_bc_ls$knitr))
+})
+
+output$test_result_ls<-renderPrint({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(EstiloDeVida))
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorias seleccionadas</p>"))
+  }
+  tab_prevalence <- table(dataset$CancerMamaAFGC,  dataset$EstiloDeVida)
+  test_result_ls<-chisq.test(tab_prevalence)
+  print(test_result_ls)
+})
+
+output$decision_result_ls <- renderPrint({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(EstiloDeVida))
+  
+  if (nrow(dataset) == 0) {
+    return(HTML("<p>No hay datos disponibles para las categorias seleccionadas</p>"))
+  }
+  tab_prevalence <- table(dataset$CancerMamaAFGC,  dataset$EstiloDeVida)
+  test<-chisq.test(tab_prevalence)
+  p_value<-test$p.value
+  decision <- ifelse(p_value < 0.05, "Rechazar", "Aceptar")
+  indep <- ifelse(decision == "Aceptar", "Independencia", "Dependencia")
+  decision_result_ls<-paste("La decisión es:", decision, "la hipótesis de igualdad de porcentajes y por tanto la", indep," entre las variables")
+    print(decision_result_ls)
+  })
+
+output$test_result_ls_or<-renderTable({
+  dataset<-AFGBC_filtered_dataset()%>%
+    filter(!is.na(CancerMamaAFGC)& !is.na(EstiloDeVida))
+  tab_prevalence <- table(dataset$CancerMamaAFGC,dataset$EstiloDeVida)
+  test_result_ls_or<-epi.2by2(tab_prevalence,"case.control")$massoc.summary[1, , drop = FALSE]
+  return(test_result_ls_or)
+})
+
+``` 
+
+
+```{r}
+fluidPage(
+  div(class = "container",
+      div(class = "row spaced-row",
+           uiOutput("tb_bc_ls")), withMathJax(
+      HTML("H<sub>0</sub>: \\( p(\\text{Cáncer} \\mid \\text{Antecedentes}) = p(\\text{Cáncer} \\mid \\text{No Antecedentes}) \\)"),
+      div(class="row spaced-row",
+      uiOutput("test_result_ls")),   div(class="row spaced-row", style = "color:#5353f3;font-size: 13pt",
+      uiOutput("decision_result_ls")),   div(class="row spaced-row",tableOutput("test_result_ls_or") )
+    )))
+```
+
+
+
+

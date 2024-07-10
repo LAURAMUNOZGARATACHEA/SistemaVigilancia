@@ -1,0 +1,404 @@
+/* styles.css */
+
+
+/* Apply styles to the first selectInput within .section.sidebar */
+
+.section.sidebar > form {
+      margin-top:0em !important; /* Adjust the value as needed */
+}
+
+.section-inputs.section.sidebar {
+    position: relative!important;
+    width: 200px !important;
+    height: auto !important;
+    visibility: visible !important;
+    top: 0px !important;
+    bottom: auto !important;
+    left: 1.5em;
+}
+
+.section.sidebar{
+  margin-top: 65px;
+  position:absolute!important;
+  border-right: 1px solid black;
+  display:none;
+  margin-left:5px!important;
+  margin-right:5px !important;
+  background-color: black !important;
+  padding-top: 0px;
+  padding-left: 8px;
+  padding-right: 8px;
+  bottom:-250px!important;
+  margin-bottom:0px !important;
+}
+
+.section.sidebar select:nth-child(1) {
+  margin-top: 140px; 
+}
+
+.html-widget.gauge {
+    fill: #4CAF50; /* Cambia el color de relleno del gráfico */
+    stroke: #000000; /* Cambia el color del contorno del gráfico */
+    stroke-width: 2px; /* Ajusta el ancho del contorno del gráfico */
+    font-family: Arial, sans-serif; /* Cambia la fuente del texto en el gráfico */
+    font-size: 12px; /* Ajusta el tamaño del texto en el gráfico */
+    background-color: #FFFFFF; /* Cambia el color de fondo del gráfico */
+    opacity: 1; /* Ajusta la opacidad del gráfico */
+}
+
+.a{
+  background-color:grey!important;
+}
+
+
+.dropdown-menu {
+    --bs-dropdown-zindex: 1000;
+    --bs-dropdown-min-width: 10rem;
+    --bs-dropdown-padding-x: 0;
+    --bs-dropdown-padding-y: .5rem;
+    --bs-dropdown-spacer: .125rem;
+    --bs-dropdown-font-size: 1rem;
+    --bs-dropdown-color: var(--bs-body-color);
+    --bs-dropdown-bg: #325D88!important;
+    --bs-dropdown-border-color: rgba(0,0,0,0.6);
+    --bs-dropdown-border-radius: var(--bs-border-radius);
+    --bs-dropdown-border-width: var(--bs-border-width);
+    --bs-dropdown-inner-border-radius: calc(var(--bs-border-radius) - var(--bs-border-width));
+    --bs-dropdown-divider-bg: rgba(0,0,0,0.15);
+    --bs-dropdown-divider-margin-y: .5rem;
+    --bs-dropdown-box-shadow: 0 0.5rem 1rem rgba(0,0,0,0.15);
+    --bs-dropdown-link-color: rgba(0,0,0,0.15)!important;
+    --bs-dropdown-link-hover-color: #fff;
+    --bs-dropdown-link-hover-bg: #272b30;
+    --bs-dropdown-link-active-color: #fff;
+    --bs-dropdown-link-active-bg: #272b30;
+    --bs-dropdown-link-disabled-color: var(--bs-tertiary-color);
+    --bs-dropdown-item-padding-x: 1rem;
+    --bs-dropdown-item-padding-y: .25rem;
+    --bs-dropdown-header-color: rgba(0,0,0,0.15);
+    --bs-dropdown-header-padding-x: 1rem;
+    --bs-dropdown-header-padding-y: .5rem;
+    position: absolute;
+    z-index: var(--bs-dropdown-zindex);
+    display: none;
+    min-width: var(--bs-dropdown-min-width);
+    padding: var(--bs-dropdown-padding-y) var(--bs-dropdown-padding-x);
+    margin: 0;
+    font-size: var(--bs-dropdown-font-size);
+    color: var(--bs-dropdown-color);
+    text-align: left;
+    list-style: none;
+    background-color: var(--bs-dropdown-bg);
+    background-clip: padding-box;
+    border: var(--bs-dropdown-border-width) solid var(--bs-dropdown-border-color);
+    border-radius: var(--bs-dropdown-border-radius);
+    box-shadow: var(--bs-dropdown-box-shadow);
+}
+
+.custom-value-box .valuebox {
+  background-color: #f8f9fa; /* Color de fondo del valueBox */
+  color: #343a40; /* Color del texto */
+  border-color: #dee2e6; /* Color del borde */
+}
+
+.custom-value-box .valuebox-text {
+  font-size: 20px; /* Tamaño del texto */
+}
+
+.custom-value-box .valuebox-icon {
+  color: #007bff; /* Color del icono */
+}
+
+
+
+#sidebar-buttons {
+  display: block;
+  position: absolute;
+  top: 48pt; /* Ajusta la posición vertical */
+  left: 10pt; /* Ajusta la posición horizontal */
+}
+
+.desktop-layout{
+    padding-left: 10px!important; 
+    margin-top:-10pt!important;
+}
+#dashboard-container {
+    padding-left: 10px !important; /* Ajuste inicial cuando el sidebar está oculto */
+}
+
+#dashboard-container.sidebar-visible {
+    padding-left: 200px !important; /* Ajuste cuando el sidebar está visible */
+}
+
+#dashboard-container.sidebar-not-visible {
+    padding-left: 10px !important; /* Ajuste cuando el sidebar está visible */
+}
+
+
+.chart-title {
+    border-bottom: 1.5px solid grey!important;
+    font-size: 1em!important;
+    font-weight: 400!important;
+    padding: 6px 8px 3px;
+    color:pink!important;
+    background-color:black!important;
+}
+
+.bg-primary {
+    --bs-bg-opacity: 1;
+    background-color: rgba(var(--bs-primary-rgb), var(--bs-bg-opacity)) !important;
+}
+
+.navbar{
+    --bslib-navbar-inverse-bg: #325D88 !important;
+   
+}
+
+svg {
+    margin-bottom: 0px!important;
+    overflow: visible !important;
+}
+
+.nabvar-nav{
+    --bs-navbar-link-color:white!important
+    --bs-navbar-hover:blueviolet!important;
+}
+
+
+.navbar-dark, .navbar.navbar-inverse, .navbar[data-bs-theme="dark"] {
+    --bs-navbar-color: #fff!important;
+    --bs-navbar-hover-color: blueviolet;
+    --bs-navbar-disabled-color: rgba(0,0,0,0.25);
+    --bs-navbar-active-color: #000;
+    --bs-navbar-brand-color: #000;
+    --bs-navbar-brand-hover-color: #000;
+    --bs-navbar-toggler-border-color: rgba(0,0,0,0.1);
+}
+
+
+
+body{
+  background-color: white!important;
+}
+
+.h3 {
+    font-weight: 200 !important;
+    line-height: 1.2!important;
+    color: white !important ;
+    font-size: 10pt !important;
+    font-family: system-ui!important;
+    margin-bottom: 4px !important;
+    margin-top: 10px !important;
+}
+
+
+/* Apply styles to the rest of the selectInput elements within .section.sidebar */
+.section.sidebar select:not(:nth-child(1)) {
+  margin-top: 150px;
+}
+
+.shiny-input-container:not(.shiny-input-container-inline) {
+    width: 200px !important;
+    max-width:90% !important;
+    margin: 0 auto;
+}
+.selectize-input, .selectize-input input {
+    color: #5d0f8d;
+    font-family: system-ui!important;
+    font-size: 10pt!important;
+    line-height: 20px;
+    font-smoothing: inherit;
+    width: 100%!important ;
+    max-height: 34px;
+}
+.selectize-dropdown{
+  background-color::#5353f3!important ;
+}
+
+.shiny-input-container label{
+    font-weight: 500 !important;
+    font-size: 13pt;
+    color:#5353f3 !important;
+}
+.form-group{
+  margin-top: 10pt!important;
+  margin-block: 0pt;
+}
+
+
+.align-bottom {
+    display: flex;
+    align-items: flex-end;
+  }
+  
+.col-md-4{
+  font-size: small!important;
+}
+
+.col-md-2{
+  font-size: small!important;
+}
+
+.col-md-3{
+  font-size: small!important;
+}
+.td{
+  font-size: 13px!important;
+}
+
+.dataTables_wrapper .dataTables_info {
+  font-size: 14px !important;
+  color: red !important;
+}
+.table.dataTable {
+  background-color: #094274!important;
+  font-size: 10px !important;
+  font-family: system-ui!important;
+}
+
+#modas {
+    font-size: 14px; /* Tamaño de la fuente */
+    color:  blueviolet ;  /* Color de la fuente */
+    /* Puedes añadir más propiedades como font-family, font-weight, etc. */
+}
+
+#libre {
+    font-size: 14px; /* Tamaño de la fuente */
+    color: blueviolet  ;  /* Color de la fuente */
+    font-weight: 500;
+}
+#porcentajeEquipo {
+    font-size: 14px; /* Tamaño de la fuente */
+    color: blueviolet;  /* Color de la fuente */
+    /* Puedes añadir más propiedades como font-family, font-weight, etc. */
+}
+
+#compe {
+    font-size: 14px; 
+    color: blueviolet  ;  
+    font-weight: 500;
+}
+#mediaSedentario {
+    font-size: 14px; 
+    color: #094274  ;  
+    font-weight: 500; 
+}
+
+#mediaOcio {
+    font-size: 14px; 
+    color: #094274  ;  
+    font-weight: 500; 
+}
+#porcentajeVegana {
+    font-size: 14px; 
+    color: #094274 ; 
+    font-weight: 500; 
+}
+#porcentajeCocinar {
+    font-size: 14px; 
+    color: #094274  ; 
+    font-weight: 500; 
+}
+
+#decision_result {
+      color: blue; /* Cambiar el color del texto */
+      font-weight: bold; /* Hacer el texto en negrita */
+    }
+.resume-box {
+  background-color: #f0f0f0;
+  padding: 10px;
+  border-radius: 5px;
+  border: 0.75px solid blueviolet;
+}
+.box-text h4 {
+  color: blueviolet ;
+}
+.nabvar{
+  background-color: #325D88!important;
+}
+
+
+.highcharts-gauge-series .highcharts-point {
+    stroke: #000!important;
+}
+
+.highcharts-gauge-series .highcharts-point-inner {
+    fill: #ff0000 !important; 
+}
+
+.highcharts-gauge-series .highcharts-data-labels text {
+    fill: #000!important; 
+}
+
+/* Clase para aplicar un degradado y ajustar el estilo de los títulos */
+.degradado {
+  margin-top: 70px!important;
+  margin-bottom: 0px;
+  padding: 12px;
+  font-size: 28pt;
+  color: white;
+  border-left-color: #337AB7;
+  border-bottom-color: #337AB7;
+  border-top-color: #337AB7;
+  border-right-color: #337AB7;
+  background: #1e5799; /* Old browsers */
+  background: -moz-linear-gradient(top, #5bc0de 0%, #207cca 74%, #2989d8 86%, #7db9e8 100%); /* FF3.6+ */
+  background: -webkit-gradient(linear, left top, left bottom, color-stop(0%,#1e5799), color-stop(74%,#207cca), color-stop(86%,#2989d8), color-stop(100%,#7db9e8)); /* Chrome, Safari4+ */
+  background: -webkit-linear-gradient(top,#5bc0de 0%,#207cca 74%,#2989d8 86%,#7db9e8 100%); /* Chrome10+, Safari5.1+ */
+  background: -o-linear-gradient(top, #5bc0de 0%,#207cca 74%,#2989d8 86%,#7db9e8 100%); /* Opera 11.10+ */
+  background: -ms-linear-gradient(top, #5bc0de 0%,#207cca 74%,#2989d8 86%,#7db9e8 100%); /* IE10+ */
+  background: linear-gradient(to bottom, #5bc0de 0%,#207cca 74%,#2989d8 86%,#7db9e8 100%); /* W3C */
+  filter: progid:DXImageTransform.Microsoft.gradient( startColorstr='#1e5799', endColorstr='#7db9e8',GradientType=0 ); /* IE6-9 */
+}
+
+.degradado-margin {
+  margin-top: 15px!important;
+  margin-bottom: 0px;
+  padding: 12px;
+  font-size: 36pt;
+  color: white;
+  border-left-color: #337AB7;
+  border-bottom-color: #337AB7;
+  border-top-color: #337AB7;
+  border-right-color: #337AB7;
+  background: #1e5799; /* Old browsers */
+  background: -moz-linear-gradient(top, #5bc0de 0%, #207cca 74%, #2989d8 86%, #7db9e8 100%); /* FF3.6+ */
+  background: -webkit-gradient(linear, left top, left bottom, color-stop(0%,#1e5799), color-stop(74%,#207cca), color-stop(86%,#2989d8), color-stop(100%,#7db9e8)); /* Chrome, Safari4+ */
+  background: -webkit-linear-gradient(top,#5bc0de 0%,#207cca 74%,#2989d8 86%,#7db9e8 100%); /* Chrome10+, Safari5.1+ */
+  background: -o-linear-gradient(top, #5bc0de 0%,#207cca 74%,#2989d8 86%,#7db9e8 100%); /* Opera 11.10+ */
+  background: -ms-linear-gradient(top, #5bc0de 0%,#207cca 74%,#2989d8 86%,#7db9e8 100%); /* IE10+ */
+  background: linear-gradient(to bottom, #5bc0de 0%,#207cca 74%,#2989d8 86%,#7db9e8 100%); /* W3C */
+  filter: progid:DXImageTransform.Microsoft.gradient( startColorstr='#1e5799', endColorstr='#7db9e8',GradientType=0 ); /* IE6-9 */
+}
+.card-body{
+  font-size:16px;
+}
+.panel-heading {
+  padding: 10px 15px;
+  font-size: 22pt;
+  background-color: white;
+  color: #337ab7;
+  border-bottom: 1px solid #337ab7 ;
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+}
+
+.spaced-row {
+    margin-top: 15px; 
+    margin-bottom: 15px; 
+  }
+
+.big-spaced-row {
+    margin-top: 30px; 
+    margin-bottom: 30px; 
+  }
+.table tbody > tr > * {
+  background-color: #4187dd !important;
+  font-size:9pt!important;
+}
+.table thead {
+      background-color: #333;
+      color: white;
+      font-size:10pt;
+    }
+
